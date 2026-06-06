@@ -24,7 +24,7 @@ waiting_for_title = False
 
 def admin_keyboard():
     kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("🎁 Создать розыгрыш", callback_data="create"))
+    kb.add(InlineKeyboardButton("🎁 Создать МИНИ РОЗЫГРЫШ", callback_data="create"))
     return kb
 
 def join_keyboard(active=True):
@@ -40,7 +40,7 @@ async def start(message: types.Message):
     if message.from_user.id == ADMIN_ID:
         await message.answer("Панель управления:", reply_markup=admin_keyboard())
     else:
-        await message.answer("Этот бот для розыгрышей 🎁")
+        await message.answer("Этот бот для розыгрышей @brazers_promo 🎁 СОЗДАТЬ ТАКОГО ЖЕ @tipo_privet67")
 
 @dp.callback_query_handler(lambda c: c.data == "create")
 async def create_giveaway(callback: types.CallbackQuery):
@@ -50,7 +50,7 @@ async def create_giveaway(callback: types.CallbackQuery):
         return
 
     waiting_for_title = True
-    await callback.message.answer("✏️ Пришлите СУММУ розыгрыша:")
+    await callback.message.answer("✏️ Пришлите ПРИЗ розыгрыша:")
     await callback.answer()
 
 @dp.message_handler(lambda message: message.from_user.id == ADMIN_ID)
@@ -66,7 +66,7 @@ async def process_giveaway_title(message: types.Message):
 
     msg = await bot.send_message(
         CHANNEL_ID,
-        f"🎁 КУБ 6 ИГРОКОВ: ВЫИГРАШ {giveaway_title}💰\n\nУчастники (0/{MAX_PARTICIPANTS}):\n(пусто)",
+        f"🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ ПРИЗ {giveaway_title} УЧАСТВОВАТЬ ТУТ @brazers_promo\nМИНИ-ИЛЮШКИ (0/{MAX_PARTICPANTS}):\n(пусто)",
         reply_markup=join_keyboard(True)
     )
 
@@ -74,7 +74,7 @@ async def process_giveaway_title(message: types.Message):
     await message.answer("✅ Розыгрыш создан и опубликован!")
 
 async def update_message():
-    text = f"🎁 КУБ 6 ИГРОКОВ: ВЫИГРАШ {giveaway_title}💰\n\nУчастники ({len(participants)}/{MAX_PARTICIPANTS}):\n"
+    text = f"🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ ПРИЗ:{giveaway_title}\nУЧАСТВОВАТЬ ТУТ @brazers_promo\nМИНИ-ИЛЮШКИ ({len(participants)}/{MAX_PARTICIPANTS}):\n"
 
     if not participants:
         text += "(пусто)"
@@ -122,7 +122,7 @@ async def join(callback: types.CallbackQuery):
     await update_message()
 
     if len(participants) == MAX_PARTICIPANTS:
-        await bot.send_message(CHANNEL_ID, "🎲 Набрано 6 участников! Определяем победителя...")
+        await bot.send_message(CHANNEL_ID, "🎲 Набрано 6 МИНИ-ИЛЮШОК! Определяем победителя...")
 
         dice_msg = await bot.send_dice(CHANNEL_ID)
         await asyncio.sleep(4)
@@ -136,10 +136,10 @@ async def join(callback: types.CallbackQuery):
 
         await bot.send_message(
             CHANNEL_ID,
-            f"🎁 КУБ 6 ИГРОКОВ ЗАВЕРШЁН!\n\n"
+            f"🎁 МИНИ-ИГРА ОТ ИЛЮШКИ ЗАВЕРШЕНА!\n\n"
             f"🎲 Выпало число: {dice_value}\n\n"
             f"🏆 Победитель:\n{winner_tag}"
-            f"💰 ВЫИГРЫШ:{giveaway_title}"
+            f"💰 ПРИЗ:{giveaway_title}"
         )
 
 if __name__ == "__main__":
