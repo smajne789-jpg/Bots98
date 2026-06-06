@@ -64,18 +64,19 @@ async def process_giveaway_title(message: types.Message):
     giveaway_title = message.text
     waiting_for_title = False
     participants = []
-
-   msg = await bot.send_photo(
-    CHANNEL_ID,
-    photo=GIVEAWAY_PHOTO,
+    
+    msg = await bot.send_photo(
+         CHANNEL_ID,
+         photo=GIVEAWAY_PHOTO,
     caption=(
         f"🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ\n\n"
-        f"🏆 ПРИЗ: {giveaway_title}\n\n"
-        f"🏆 <b>ПРИЗ:</b>УЧАСТВОВАТЬ ТУТ @brazers_promo\n\n"
+        f"🏆 <b>ПРИЗ:</b> {giveaway_title}\n\n"
+        f"👉 УЧАСТВОВАТЬ ТУТ @brazers_promo\n\n"
         f"😈 <b>МИНИ-ИЛЮШКИ (0/{MAX_PARTICIPANTS}):\n"
         f"(пусто)"
     ),
-    reply_markup=join_keyboard(True)
+    reply_markup=join_keyboard(True),
+    parse_mode="HTML"
 )
     
     message_id = msg.message_id
