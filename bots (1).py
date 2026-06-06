@@ -82,12 +82,13 @@ async def process_giveaway_title(message: types.Message):
     message_id = msg.message_id
     await message.answer("✅ Розыгрыш создан и опубликован!")
 
-async def update_message():
-    text = 
-        f"<b>🎁 МИНИ-ИГРА ОТ ИЛЮШКИ НАЧАЛАСЬ\n\n"
-        f"<b>🏆 ПРИЗ:</b> {giveaway_title}\n\n"
-        f"<b>👉 УЧАСТВОВАТЬ ТУТ @brazers_promo</b>"
-        f"<b>😈МИНИ-ИЛЮШКИ ({len(participants)}/{MAX_PARTICIPANTS}):\n"
+msg = await bot.send_photo(
+    CHANNEL_ID,
+    photo=GIVEAWAY_PHOTO,
+    caption=( f"<b>🎁 МИНИ-ИГРА ОТ ИЛЮШКИ НАЧАЛАСЬ\n\n🏆 ПРИЗ:</b> {giveaway_title}\n\n<b>👉 УЧАСТВОВАТЬ ТУТ @brazers_promo<b>😈МИНИ-ИЛЮШКИ (0/{MAX_PARTICIPANTS}):\n(пусто)"
+    ),
+    reply_markup=join_keyboard(True)
+)
 
     if not participants:
         text += "(пусто)"
