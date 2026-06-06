@@ -23,7 +23,7 @@ giveaway_title = ""
 waiting_for_title = False
 
 # Укажи ссылку на постоянное изображение
-GIVEAWAY_IMAGE = "https://example.com/giveaway.jpg"
+GIVEAWAY_IMAGE = "https://ibb.co/v6nkKG4K"
 
 def admin_keyboard():
     kb = InlineKeyboardMarkup()
@@ -68,11 +68,8 @@ async def process_giveaway_title(message: types.Message):
     participants = []
 
     caption = (
-        f"🎁 КУБ 6 ИГРОКОВ: ВЫИГРАШ {giveaway_title}💰
-
-"
-        f"Участники (0/{MAX_PARTICIPANTS}):
-(пусто)"
+        f"🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ ВЫИГРАШ {giveaway_title}💰\n\nУчастники (0/{MAX_PARTICIPANTS}):\n(пусто)",
+        reply_markup=join_keyboard(True)
     )
 
     msg = await bot.send_photo(
@@ -87,11 +84,7 @@ async def process_giveaway_title(message: types.Message):
 
 async def update_message():
     text = (
-        f"🎁 КУБ 6 ИГРОКОВ: ВЫИГРАШ {giveaway_title}💰
-
-"
-        f"Участники ({len(participants)}/{MAX_PARTICIPANTS}):
-"
+        f"🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ ВЫИГРАШ {giveaway_title}💰\n\nУчастники ({len(participants)}/{MAX_PARTICIPANTS}):\n"
     )
 
     if not participants:
@@ -100,16 +93,14 @@ async def update_message():
         for p in participants:
             name = p['username'] or p['name']
             if p['username']:
-                text += f"{p['number']}. @{name}
-"
+                text += f"{p['number']}. @{name}\n"
             else:
-                text += f"{p['number']}. {name}
-"
+                text += f"{p['number']}. {name}\n"
 
-    await bot.edit_message_caption(
+    await bot.edit_message_text(
+        text,
         chat_id=CHANNEL_ID,
         message_id=message_id,
-        caption=text,
         reply_markup=join_keyboard(len(participants) < MAX_PARTICIPANTS)
     )
 
@@ -156,12 +147,14 @@ async def join(callback: types.CallbackQuery):
 
         await bot.send_message(
             CHANNEL_ID,
-            f"🎁 КУБ 6 ИГРОКОВ ЗАВЕРШЁН!\n\n"
+            f"🎁 МИНИ-ИГРА ОТ ИЛЮШКИ ЗАВЕРШЕНА!\n\n"
             f"🎲 Выпало число: {dice_value}\n\n"
             f"🏆 Победитель:\n{winner_tag}"
             f"💰 ВЫИГРЫШ:{giveaway_title}"
         )
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    executor.start_polling(dp, skip_updates=True)
     logging.basicConfig(level=logging.INFO)
     executor.start_polling(dp, skip_updates=True)
