@@ -68,7 +68,7 @@ async def process_giveaway_title(message: types.Message):
     participants = []
 
     caption = (
-        f"🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ ВЫИГРАШ {giveaway_title}💰\n\nУчастники (0/{MAX_PARTICIPANTS}):\n(пусто)",
+        f"🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ ПРИЗ: {giveaway_title}💰\n\nМИНИ-ИЛЮШКИ (0/{MAX_PARTICIPANTS}):\n(пусто)",
         reply_markup=join_keyboard(True)
     )
 
@@ -84,7 +84,7 @@ async def process_giveaway_title(message: types.Message):
 
 async def update_message():
     text = (
-        f"🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ ВЫИГРАШ {giveaway_title}💰\n\nУчастники ({len(participants)}/{MAX_PARTICIPANTS}):\n"
+        f"🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ ПРИЗ:{giveaway_title}💰\n\nМИНИ-ИЛЮШКИ ({len(participants)}/{MAX_PARTICIPANTS}):\n"
     )
 
     if not participants:
@@ -129,11 +129,11 @@ async def join(callback: types.CallbackQuery):
         "number": len(participants) + 1
     })
 
-    await callback.answer(f"Ты участник №{len(participants)}")
+    await callback.answer(f"Ты МИНИ-ИЛЮШКИ №{len(participants)}")
     await update_message()
 
     if len(participants) == MAX_PARTICIPANTS:
-        await bot.send_message(CHANNEL_ID, "🎲 Набрано 6 участников! Определяем победителя...")
+        await bot.send_message(CHANNEL_ID, "🎲 Набрано 6 МИНИ-ИЛЮШОК! Определяем победителя...")
 
         dice_msg = await bot.send_dice(CHANNEL_ID)
         await asyncio.sleep(4)
@@ -150,7 +150,7 @@ async def join(callback: types.CallbackQuery):
             f"🎁 МИНИ-ИГРА ОТ ИЛЮШКИ ЗАВЕРШЕНА!\n\n"
             f"🎲 Выпало число: {dice_value}\n\n"
             f"🏆 Победитель:\n{winner_tag}"
-            f"💰 ВЫИГРЫШ:{giveaway_title}"
+            f"💰 ПРИЗ:{giveaway_title}"
         )
 
 if __name__ == "__main__":
