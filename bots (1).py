@@ -10,6 +10,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 MAX_PARTICIPANTS = 6
+GIVEAWAY_PHOTO = "AgACAgIAAxkBAAEfBXFqI4J6_Cs43vZEj3a00hejTsRIJAACqh1rG7pBGUl0DKdd0XsB8wEAAwIAA3gAAzsE"
 
 if not TOKEN or not ADMIN_ID or not CHANNEL_ID:
     raise ValueError("Set BOT_TOKEN, ADMIN_ID, CHANNEL_ID environment variables")
@@ -64,12 +65,19 @@ async def process_giveaway_title(message: types.Message):
     waiting_for_title = False
     participants = []
 
-    msg = await bot.send_message(
-        CHANNEL_ID,
-        f"🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ ПРИЗ {giveaway_title} УЧАСТВОВАТЬ ТУТ @brazers_promo\nМИНИ-ИЛЮШКИ (0/{MAX_PARTICPANTS}):\n(пусто)",
-        reply_markup=join_keyboard(True)
-    )
-
+    msg = await bot.send_photo(
+    CHANNEL_ID,
+    photo=GIVEAWAY_PHOTO,
+    caption=(
+        f"🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ\n\n"
+        f"🏆 ПРИЗ: {giveaway_title}\n\n"
+        f"УЧАСТВОВАТЬ ТУТ @brazers_promo\n\n"
+        f"МИНИ-ИЛЮШКИ (0/{MAX_PARTICIPANTS}):\n"
+        f"(пусто)"
+    ),
+    reply_markup=join_keyboard(True)
+)
+    
     message_id = msg.message_id
     await message.answer("✅ Розыгрыш создан и опубликован!")
 
@@ -86,12 +94,12 @@ async def update_message():
             else:
                 text += f"{p['number']}. {name}\n"
 
-    await bot.edit_message_text(
-        text,
-        chat_id=CHANNEL_ID,
-        message_id=message_id,
-        reply_markup=join_keyboard(len(participants) < MAX_PARTICIPANTS)
-    )
+    await bot.edit_message_caption(
+    chat_id=CHANNEL_ID,
+    message_id=message_id,
+    caption=text,
+    reply_markup=join_keyboard(len(participants) < MAX_PARTICIPANTS)
+)
 
 @dp.callback_query_handler(lambda c: c.data == "closed")
 async def closed(callback: types.CallbackQuery):
