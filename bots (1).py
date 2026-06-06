@@ -64,31 +64,25 @@ async def process_giveaway_title(message: types.Message):
     giveaway_title = message.text
     waiting_for_title = False
     participants = []
-    
+
     msg = await bot.send_photo(
-         CHANNEL_ID,
-         photo=GIVEAWAY_PHOTO,
+    CHANNEL_ID,
+    photo=GIVEAWAY_PHOTO,
     caption=(
-        f"🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ\n\n"
-        f"🏆 <b>ПРИЗ:</b> {giveaway_title}\n\n"
+        f"<b>🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ\n\n"
+        f"🏆 ПРИЗ: {giveaway_title}\n\n"
         f"👉 УЧАСТВОВАТЬ ТУТ @brazers_promo\n\n"
-        f"😈 <b>МИНИ-ИЛЮШКИ (0/{MAX_PARTICIPANTS}):\n"
+        f"😈 МИНИ-ИЛЮШКИ (0/{MAX_PARTICIPANTS}):\n"
         f"(пусто)"
     ),
-    reply_markup=join_keyboard(True),
-    parse_mode="HTML"
+    reply_markup=join_keyboard(True)
 )
     
     message_id = msg.message_id
     await message.answer("✅ Розыгрыш создан и опубликован!")
 
-msg = await bot.send_photo(
-    CHANNEL_ID,
-    photo=GIVEAWAY_PHOTO,
-    caption=( f"<b>🎁 МИНИ-ИГРА ОТ ИЛЮШКИ НАЧАЛАСЬ\n\n🏆 ПРИЗ:</b> {giveaway_title}\n\n<b>👉 УЧАСТВОВАТЬ ТУТ @brazers_promo<b>😈МИНИ-ИЛЮШКИ (0/{MAX_PARTICIPANTS}):\n(пусто)"
-    ),
-    reply_markup=join_keyboard(True)
-)
+async def update_message():
+    text = f"🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ ПРИЗ:{giveaway_title}\n👉 УЧАСТВОВАТЬ ТУТ @brazers_promo\n😈 МИНИ-ИЛЮШКИ ({len(participants)}/{MAX_PARTICIPANTS}):\n"
 
     if not participants:
         text += "(пусто)"
@@ -136,7 +130,7 @@ async def join(callback: types.CallbackQuery):
     await update_message()
 
     if len(participants) == MAX_PARTICIPANTS:
-        await bot.send_message(CHANNEL_ID, "🎲 Набрано 6 МИНИ-ИЛЮШОК!😈 Определяем победителя...")
+        await bot.send_message(CHANNEL_ID, "🎲 Набрано 6 МИНИ-ИЛЮШОК! Определяем победителя...")
 
         dice_msg = await bot.send_dice(CHANNEL_ID)
         await asyncio.sleep(4)
@@ -150,7 +144,7 @@ async def join(callback: types.CallbackQuery):
 
         await bot.send_message(
             CHANNEL_ID,
-            f"<b>🎁 МИНИ-ИГРА ОТ ИЛЮШКИ ЗАВЕРШЕНА!\n\n"
+            f"🎁 МИНИ-ИГРА ОТ ИЛЮШКИ ЗАВЕРШЕНА!\n\n"
             f"🎲 Выпало число: {dice_value}\n\n"
             f"<b>🏆 Победитель:\n{winner_tag}"
             f"💰 ПРИЗ:{giveaway_title}"
