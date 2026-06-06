@@ -43,7 +43,7 @@ async def start(message: types.Message):
     if message.from_user.id == ADMIN_ID:
         await message.answer("Панель управления:", reply_markup=admin_keyboard())
     else:
-        await message.answer("Этот бот для розыгрышей 🎁")
+        await message.answer("Этот бот для розыгрышей @brazers_promo 🎁 СОЗДАТЬ ТАКОГО ЖЕ @tipo_privet67")
 
 @dp.callback_query_handler(lambda c: c.data == "create")
 async def create_giveaway(callback: types.CallbackQuery):
@@ -53,7 +53,7 @@ async def create_giveaway(callback: types.CallbackQuery):
         return
 
     waiting_for_title = True
-    await callback.message.answer("✏️ Пришлите СУММУ розыгрыша:")
+    await callback.message.answer("✏️ Пришлите СУММУ розыгрыша ТОЛЬКО ЧИСЛОМ СУКА!!:")
     await callback.answer()
 
 @dp.message_handler(lambda message: message.from_user.id == ADMIN_ID)
@@ -68,7 +68,7 @@ async def process_giveaway_title(message: types.Message):
     participants = []
 
     caption = (
-        f"🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ ПРИЗ: {giveaway_title}💰\n\nМИНИ-ИЛЮШКИ (0/{MAX_PARTICIPANTS}):\n(пусто)",
+        f"🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ ПРИЗ: {giveaway_title}💰\nУЧАСТВОВАТЬ ТУТ @brazers_promo\nМИНИ-ИЛЮШКИ (0/{MAX_PARTICIPANTS}):\n(пусто)",
         reply_markup=join_keyboard(True)
     )
 
@@ -84,7 +84,7 @@ async def process_giveaway_title(message: types.Message):
 
 async def update_message():
     text = (
-        f"🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ ПРИЗ:{giveaway_title}💰\n\nМИНИ-ИЛЮШКИ ({len(participants)}/{MAX_PARTICIPANTS}):\n"
+        f"🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ ПРИЗ:{giveaway_title}💰\nУЧАСТВОВАТЬ ТУТ @brazers_promo\nМИНИ-ИЛЮШКИ ({len(participants)}/{MAX_PARTICIPANTS}):\n"
     )
 
     if not participants:
