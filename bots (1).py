@@ -66,7 +66,7 @@ async def process_giveaway_title(message: types.Message):
 
     msg = await bot.send_message(
         CHANNEL_ID,
-        f"🎁 РОЗЫГРЫШ: {giveaway_title}\n\nПРОВОЖУ ТУТ @ZAKON2014\n\nУчастники (0/{MAX_PARTICIPANTS}):\n(пусто)",
+        f"🎁 КУБ 6 ИГРОКОВ: {giveaway_title}\n\n\n\nУчастники (0/{MAX_PARTICIPANTS}):\n(пусто)",
         reply_markup=join_keyboard(True)
     )
 
@@ -74,7 +74,7 @@ async def process_giveaway_title(message: types.Message):
     await message.answer("✅ Розыгрыш создан и опубликован!")
 
 async def update_message():
-    text = f"🎁 РОЗЫГРЫШ: {giveaway_title}\n\nПРОВОЖУ ТУТ @ZAKON2014\n\nУчастники ({len(participants)}/{MAX_PARTICIPANTS}):\n"
+    text = f"🎁 КУБ 6 ИГРОКОВ: {giveaway_title}\n\n\n\nУчастники ({len(participants)}/{MAX_PARTICIPANTS}):\n"
 
     if not participants:
         text += "(пусто)"
@@ -136,7 +136,7 @@ async def join(callback: types.CallbackQuery):
 
         await bot.send_message(
             CHANNEL_ID,
-            f"🎁 РОЗЫГРЫШ '{giveaway_title}' ЗАВЕРШЁН!\n\n"
+            f"🎁 КУБ 6 ИГРОКОВ '{giveaway_title}' ЗАВЕРШЁН!\n\n"
             f"🎲 Выпало число: {dice_value}\n\n"
             f"🏆 Победитель:\n{winner_tag}"
         )
