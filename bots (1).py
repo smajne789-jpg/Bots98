@@ -82,7 +82,7 @@ async def process_giveaway_title(message: types.Message):
     await message.answer("✅ Розыгрыш создан и опубликован!")
 
 async def update_message():
-    text = f"🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ  ПРИЗ:{giveaway_title} \n👉 УЧАСТВОВАТЬ ТУТ @brazers_promo\n😈 МИНИ-ИЛЮШКИ  ({len(participants)}/{MAX_PARTICIPANTS}):\n"
+    text = f"🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ\n\n🏆ПРИЗ:{giveaway_title}\n\n👉 УЧАСТВОВАТЬ ТУТ @brazers_promo\n\n😈 МИНИ-ИЛЮШКИ\n\n({len(participants)}/{MAX_PARTICIPANTS}):\n"
 
     if not participants:
         text += "(пусто)"
