@@ -51,7 +51,7 @@ async def create_giveaway(callback: types.CallbackQuery):
         return
 
     waiting_for_title = True
-    await callback.message.answer("✏️ Пришлите ПРИЗ розыгрыша:")
+    await callback.message.answer("✏️ Пришлите приз розыгрыша со смайломм если деньги то смайл денег если подарок смайл игрушки:")
     await callback.answer()
 
 @dp.message_handler(lambda message: message.from_user.id == ADMIN_ID)
@@ -69,7 +69,7 @@ async def process_giveaway_title(message: types.Message):
     CHANNEL_ID,
     photo=GIVEAWAY_PHOTO,
     caption=(
-        f"<b>🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ\n\n"
+        f"🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ\n\n"
         f"🏆 ПРИЗ: {giveaway_title}\n\n"
         f"👉 УЧАСТВОВАТЬ ТУТ @brazers_promo\n\n"
         f"😈 МИНИ-ИЛЮШКИ (0/{MAX_PARTICIPANTS}):\n"
@@ -82,7 +82,7 @@ async def process_giveaway_title(message: types.Message):
     await message.answer("✅ Розыгрыш создан и опубликован!")
 
 async def update_message():
-    text = f"🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ ПРИЗ:{giveaway_title}\n👉 УЧАСТВОВАТЬ ТУТ @brazers_promo\n😈 МИНИ-ИЛЮШКИ ({len(participants)}/{MAX_PARTICIPANTS}):\n"
+    text = f"🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ  ПРИЗ:{giveaway_title} \n👉 УЧАСТВОВАТЬ ТУТ @brazers_promo\n😈 МИНИ-ИЛЮШКИ  ({len(participants)}/{MAX_PARTICIPANTS}):\n"
 
     if not participants:
         text += "(пусто)"
@@ -146,7 +146,7 @@ async def join(callback: types.CallbackQuery):
             CHANNEL_ID,
             f"🎁 МИНИ-ИГРА ОТ ИЛЮШКИ ЗАВЕРШЕНА!\n\n"
             f"🎲 Выпало число: {dice_value}\n\n"
-            f"<b>🏆 Победитель:\n{winner_tag}"
+            f"🏆 Победитель:\n{winner_tag}"
             f"💰 ПРИЗ:{giveaway_title}"
         )
 
