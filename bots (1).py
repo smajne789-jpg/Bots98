@@ -10,7 +10,6 @@ TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 MAX_PARTICIPANTS = 6
-GIVEAWAY_PHOTO = "AgACAgIAAxkBAAEfBXFqI4J6_Cs43vZEj3a00hejTsRIJAACqh1rG7pBGUl0DKdd0XsB8wEAAwIAA3gAAzsE"
 
 if not TOKEN or not ADMIN_ID or not CHANNEL_ID:
     raise ValueError("Set BOT_TOKEN, ADMIN_ID, CHANNEL_ID environment variables")
@@ -42,7 +41,11 @@ async def start(message: types.Message):
         await message.answer("Панель управления:", reply_markup=admin_keyboard())
     else:
         await message.answer("Этот бот для розыгрышей @brazers_promo 🎁 СОЗДАТЬ ТАКОГО ЖЕ @tipo_privet67")
-
+        
+@dp.message_handler(content_types=['photo'])
+async def get_photo(message: types.Message):
+    await message.reply(message.photo[-1].file_id)
+    
 @dp.callback_query_handler(lambda c: c.data == "create")
 async def create_giveaway(callback: types.CallbackQuery):
     global waiting_for_title
@@ -104,7 +107,7 @@ async def update_message():
 @dp.callback_query_handler(lambda c: c.data == "closed")
 async def closed(callback: types.CallbackQuery):
     await callback.answer("Набор участников уже закрыт")
-
+    
 @dp.callback_query_handler(lambda c: c.data == "join")
 async def join(callback: types.CallbackQuery):
     global participants
