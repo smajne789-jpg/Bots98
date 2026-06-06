@@ -66,7 +66,7 @@ async def process_giveaway_title(message: types.Message):
 
     msg = await bot.send_message(
         CHANNEL_ID,
-        f"🎁 КУБ 6 ИГРОКОВ: ВЫИГРАШ {giveaway_title}\n\nУчастники (0/{MAX_PARTICIPANTS}):\n(пусто)",
+        f"🎁 КУБ 6 ИГРОКОВ: ВЫИГРАШ {giveaway_title}💰\n\nУчастники (0/{MAX_PARTICIPANTS}):\n(пусто)",
         reply_markup=join_keyboard(True)
     )
 
@@ -74,7 +74,7 @@ async def process_giveaway_title(message: types.Message):
     await message.answer("✅ Розыгрыш создан и опубликован!")
 
 async def update_message():
-    text = f"🎁 КУБ 6 ИГРОКОВ: ВЫИГРАШ {giveaway_title}\n\nУчастники ({len(participants)}/{MAX_PARTICIPANTS}):\n"
+    text = f"🎁 КУБ 6 ИГРОКОВ: ВЫИГРАШ {giveaway_title}💰\n\nУчастники ({len(participants)}/{MAX_PARTICIPANTS}):\n"
 
     if not participants:
         text += "(пусто)"
