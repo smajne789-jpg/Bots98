@@ -244,7 +244,7 @@ async def join(callback: types.CallbackQuery):
             f"💰 ПРИЗ:{giveaway_title}"
         )
         
-        @dp.callback_query_handler(lambda c: c.data == "finish_classic")
+@dp.callback_query_handler(lambda c: c.data == "finish_classic")
 async def finish_classic(callback: types.CallbackQuery):
     global classic_participants
 
