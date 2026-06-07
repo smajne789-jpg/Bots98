@@ -56,7 +56,7 @@ async def create_giveaway(callback: types.CallbackQuery):
     await callback.answer()
     
 @dp.callback_query_handler(lambda c: c.data == "classic_create")
- async def classic_create(callback: types.CallbackQuery):
+async def classic_create(callback: types.CallbackQuery):
     global classic_step
 
     if callback.from_user.id != ADMIN_ID:
