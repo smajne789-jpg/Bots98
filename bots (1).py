@@ -69,7 +69,7 @@ async def classic_create(callback: types.CallbackQuery):
     )
 
     await callback.answer()
-
+    
 @dp.message_handler(lambda message: message.from_user.id == ADMIN_ID)
 async def process_giveaway_title(message: types.Message):
     global participants, message_id, giveaway_title, waiting_for_title
