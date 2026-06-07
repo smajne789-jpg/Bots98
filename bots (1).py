@@ -101,9 +101,8 @@ async def process_giveaway_title(message: types.Message):
             CHANNEL_ID,
             photo=GIVEAWAY_PHOTO,
             caption=(
-                f"☘️ РОЗЫГРЫШ ОТ ИЛЮШКИ\n\n"
+                f"☘️ {classic_prize} ОТ ИЛЮШКИ\n\n"
                 f"👉 УЧАСТВОВАТЬ ТУТ @brazers_promo\n\n"
-                f"🎁 ПРИЗ: {classic_prize}"
             ),
             reply_markup=classic_keyboard()
         )
@@ -279,9 +278,8 @@ async def finish_classic(callback: types.CallbackQuery):
         chat_id=CHANNEL_ID,
         message_id=classic_message_id,
         caption=(
-            f"☘️ РОЗЫГРЫШ ОТ ИЛЮШКИ\n\n"
+            f"☘️ {classic_prize} ОТ ИЛЮШКИ ОТ ИЛЮШКИ\n\n"
             f"👉 УЧАСТВОВАТЬ ТУТ @brazers_promo\n\n"
-            f"🎁 ПРИЗ: {classic_prize}\n\n"
             f"✨ Победители: {winners_text}"
         )
     )
