@@ -172,8 +172,6 @@ def finish_keyboard():
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("🏆 Завершить розыгрыш", callback_data="finish_classic"))
     return kb
-    message_id = msg.message_id
-    await message.answer("✅ Розыгрыш создан и опубликован!")
 
 async def update_message():
     text = f"🎁 МИНИ-ИГРА 6 ИГРОКОВ ОТ ИЛЮШКИ\n\n🏆ПРИЗ:{giveaway_title}\n\n👉 УЧАСТВОВАТЬ ТУТ @brazers_promo\n\n😈 МИНИ-ИЛЮШКИ\n\n({len(participants)}/{MAX_PARTICIPANTS}):\n"
