@@ -102,7 +102,8 @@ async def process_giveaway_title(message: types.Message):
             photo=GIVEAWAY_PHOTO,
             caption=(
                 f"☘️ РОЗЫГРЫШ ОТ ИЛЮШКИ\n\n"
-                f"ПРИЗ: {classic_prize}"
+                f"👉 УЧАСТВОВАТЬ ТУТ @brazers_promo\n\n"
+                f"🎁 ПРИЗ: {classic_prize}"
             ),
             reply_markup=classic_keyboard()
         )
@@ -161,7 +162,7 @@ async def classic_join(callback: types.CallbackQuery):
         }
     )
 
-    await callback.answer("Участие подтверждено")
+    await callback.answer("Теперь ты раб!")
 
 def classic_keyboard():
     kb = InlineKeyboardMarkup()
@@ -279,8 +280,9 @@ async def finish_classic(callback: types.CallbackQuery):
         message_id=classic_message_id,
         caption=(
             f"☘️ РОЗЫГРЫШ ОТ ИЛЮШКИ\n\n"
-            f"ПРИЗ: {classic_prize}\n\n"
-            f"Победители: {winners_text}"
+            f"👉 УЧАСТВОВАТЬ ТУТ @brazers_promo\n\n"
+            f"🎁 ПРИЗ: {classic_prize}\n\n"
+            f"✨ Победители: {winners_text}"
         )
     )
 
