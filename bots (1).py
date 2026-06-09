@@ -1,21 +1,27 @@
 import asyncio
+import json
 import logging
 import os
 import random
+import re
 from html import escape
+from pathlib import Path
+from typing import Optional
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils import executor
 
 
-# --- ENV VARIABLES ---
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID_RAW = os.getenv("ADMIN_ID")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
+REFERRAL_CHAT_ID = os.getenv("REFERRAL_CHAT_ID") or CHANNEL_ID
 
 MAX_PARTICIPANTS = 6
 GIVEAWAY_PHOTO = "AgACAgIAAxkBAANSaiOILtbjI9uXPclOjby3azTEWqQAAqodaxu6QRlJLp2T9fXeiH0BAAMCAAN5AAM7BA"
+REFERRAL_DATA_FILE = Path(__file__).with_name("referrals.json")
+REFERRAL_TOP_LIMIT = 10
 
 if not TOKEN or not ADMIN_ID_RAW or not CHANNEL_ID:
     raise ValueError("Set BOT_TOKEN, ADMIN_ID, CHANNEL_ID environment variables")
@@ -28,7 +34,6 @@ except ValueError as exc:
 bot = Bot(token=TOKEN, parse_mode=types.ParseMode.HTML)
 dp = Dispatcher(bot)
 
-
 participants = []
 message_id = None
 giveaway_title = ""
@@ -40,6 +45,118 @@ classic_prize = ""
 classic_winners_count = 1
 classic_message_id = None
 classic_participants = []
+
+admin_input_state = None
+
+
+def target_to_public_link(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    if text.startswith("http://") or text.startswith("https://"):
+        return text
+
+    if text.startswith("@") and len(text) > 1:
+        return f"https://t.me/{text[1:]}"
+
+    return None
+
+
+def parse_chat_target(value: str) -> Optional[str]:
+    text = (value or "").strip()
+    if not text:
+        return None
+
+    if text.startswith("@"):
+        return text
+
+    match = re.match(r"https?://t\.me/([A-Za-z0-9_]{4,})/?$", text)
+    if match:
+        return f"@{match.group(1)}"
+
+    if re.fullmatch(r"-?\d+", text):
+        return str(int(text))
+
+    return None
+
+
+def normalize_join_link(value: str) -> Optional[str]:
+    text = (value or "").strip()
+    if not text:
+        return None
+
+    if text.startswith("@") and len(text) > 1:
+        return f"https://t.me/{text[1:]}"
+
+    if text.startswith("t.me/"):
+        return f"https://{text}"
+
+    if text.startswith("http://") or text.startswith("https://"):
+        return text
+
+    return None
+
+
+def default_settings() -> dict:
+    return {
+        "captcha_enabled": True,
+        "subscription_required": True,
+        "required_channel_id": str(CHANNEL_ID),
+        "required_channel_link": target_to_public_link(CHANNEL_ID),
+        "required_chat_id": str(REFERRAL_CHAT_ID),
+        "required_chat_link": target_to_public_link(REFERRAL_CHAT_ID),
+    }
+
+
+def empty_referral_data() -> dict:
+    return {
+        "users": {},
+        "invite_links": {},
+        "joined": {},
+        "pending_joined": {},
+        "access": {},
+        "captcha": {},
+        "settings": default_settings(),
+    }
+
+
+def load_referral_data() -> dict:
+    if not REFERRAL_DATA_FILE.exists():
+        return empty_referral_data()
+
+    try:
+        data = json.loads(REFERRAL_DATA_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        logging.exception("Could not load referral data")
+        return empty_referral_data()
+
+    defaults = empty_referral_data()
+    for key, default_value in defaults.items():
+        if not isinstance(data.get(key), dict):
+            data[key] = default_value.copy()
+
+    settings = data.setdefault("settings", {})
+    for key, default_value in default_settings().items():
+        if key not in settings:
+            settings[key] = default_value
+
+    return data
+
+
+def save_referral_data() -> None:
+    temp_file = REFERRAL_DATA_FILE.with_suffix(".json.tmp")
+    temp_file.write_text(
+        json.dumps(referral_data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temp_file.replace(REFERRAL_DATA_FILE)
+
+
+referral_data = load_referral_data()
 
 
 def is_admin(user_id: int) -> bool:
@@ -55,11 +172,190 @@ def user_display(user: dict) -> str:
     return escape(name)
 
 
+def access_settings() -> dict:
+    settings = referral_data.setdefault("settings", {})
+    for key, default_value in default_settings().items():
+        settings.setdefault(key, default_value)
+    return settings
+
+
+def current_referral_chat_target() -> str:
+    settings = access_settings()
+    return settings.get("required_chat_id") or str(REFERRAL_CHAT_ID)
+
+
+def access_state(user_id: int) -> dict:
+    state = referral_data.setdefault("access", {}).setdefault(
+        str(user_id),
+        {
+            "captcha_passed": False,
+            "access_granted": False,
+        },
+    )
+    state.setdefault("captcha_passed", False)
+    state.setdefault("access_granted", False)
+    return state
+
+
+def remember_referral_user(user: types.User) -> dict:
+    users = referral_data.setdefault("users", {})
+    user_id = str(user.id)
+    profile = users.setdefault(
+        user_id,
+        {
+            "username": None,
+            "name": "Без имени",
+            "invite_link": None,
+            "invite_target": None,
+            "invites": 0,
+        },
+    )
+
+    profile["username"] = user.username
+    profile["name"] = user.first_name or "Без имени"
+    profile.setdefault("invite_link", None)
+    profile.setdefault("invite_target", None)
+    profile.setdefault("invites", 0)
+    return profile
+
+
+def referral_invites_count(user_id: int) -> int:
+    profile = referral_data.setdefault("users", {}).get(str(user_id), {})
+    return int(profile.get("invites") or 0)
+
+
+def referral_chat_matches(chat: types.Chat) -> bool:
+    target_chat = str(current_referral_chat_target())
+
+    if target_chat.startswith("@"):
+        username = getattr(chat, "username", None)
+        return username is not None and f"@{username}".lower() == target_chat.lower()
+
+    return str(chat.id) == target_chat
+
+
+def referral_keyboard() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        InlineKeyboardButton("🔗 Моя ссылка", callback_data="ref_link"),
+        InlineKeyboardButton("🏆 Топ игроков", callback_data="ref_top"),
+    )
+    return kb
+
+
+def referral_top_text() -> str:
+    leaders = []
+    for user_id, profile in referral_data.setdefault("users", {}).items():
+        invites = int(profile.get("invites") or 0)
+        if invites > 0:
+            leaders.append((invites, user_id, profile))
+
+    if not leaders:
+        return (
+            "🏆 <b>Топ игроков</b>\n\n"
+            "Пока никто никого не пригласил.\n"
+            "Забирай свою ссылку через /ref и приглашай людей в чат."
+        )
+
+    leaders.sort(key=lambda item: (-item[0], item[1]))
+    lines = ["🏆 <b>Топ игроков по приглашениям</b>\n"]
+
+    for place, (invites, _, profile) in enumerate(leaders[:REFERRAL_TOP_LIMIT], start=1):
+        lines.append(f"{place}. {user_display(profile)} - <b>{invites}</b>")
+
+    return "\n".join(lines)
+
+
+def create_captcha() -> tuple[str, str]:
+    left = random.randint(1, 9)
+    right = random.randint(1, 9)
+
+    if random.choice([True, False]):
+        return f"{left} + {right}", str(left + right)
+
+    if left < right:
+        left, right = right, left
+    return f"{left} - {right}", str(left - right)
+
+
+def captcha_keyboard() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(InlineKeyboardButton("🔄 Новая капча", callback_data="refresh_captcha"))
+    return kb
+
+
+def subscription_keyboard() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardMarkup(row_width=1)
+    settings = access_settings()
+
+    channel_link = settings.get("required_channel_link")
+    chat_link = settings.get("required_chat_link")
+
+    if channel_link:
+        kb.add(InlineKeyboardButton("📢 Подписаться на канал", url=channel_link))
+    if chat_link:
+        kb.add(InlineKeyboardButton("💬 Вступить в чат", url=chat_link))
+
+    kb.add(InlineKeyboardButton("✅ Проверить подписку", callback_data="check_subscriptions"))
+    return kb
+
+
+def access_settings_keyboard() -> InlineKeyboardMarkup:
+    settings = access_settings()
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        InlineKeyboardButton(
+            f"🤖 Капча: {'ВКЛ' if settings.get('captcha_enabled') else 'ВЫКЛ'}",
+            callback_data="toggle_captcha",
+        ),
+        InlineKeyboardButton(
+            f"📌 Подписка: {'ОБЯЗАТЕЛЬНА' if settings.get('subscription_required') else 'ВЫКЛ'}",
+            callback_data="toggle_subscription",
+        ),
+        InlineKeyboardButton("📢 Задать канал (@username / id)", callback_data="set_channel_target"),
+        InlineKeyboardButton("🔗 Задать ссылку на канал", callback_data="set_channel_link"),
+        InlineKeyboardButton("💬 Задать чат (@username / id)", callback_data="set_chat_target"),
+        InlineKeyboardButton("🔗 Задать ссылку на чат", callback_data="set_chat_link"),
+        InlineKeyboardButton("⬅️ Назад", callback_data="access_back"),
+    )
+    return kb
+
+
+def access_settings_text() -> str:
+    settings = access_settings()
+    channel_target = settings.get("required_channel_id") or "не задан"
+    chat_target = settings.get("required_chat_id") or "не задан"
+    channel_link = settings.get("required_channel_link") or "не задана"
+    chat_link = settings.get("required_chat_link") or "не задана"
+
+    warning_lines = []
+    if settings.get("subscription_required") and not settings.get("required_channel_link"):
+        warning_lines.append("• Для канала лучше добавить ссылку, иначе пользователю будет нечего нажимать.")
+    if settings.get("subscription_required") and not settings.get("required_chat_link"):
+        warning_lines.append("• Для чата лучше добавить ссылку, иначе пользователю будет нечего нажимать.")
+
+    text = (
+        "⚙️ <b>Настройки доступа</b>\n\n"
+        f"Капча: <b>{'включена' if settings.get('captcha_enabled') else 'выключена'}</b>\n"
+        f"Обязательная подписка: <b>{'да' if settings.get('subscription_required') else 'нет'}</b>\n\n"
+        f"Канал для проверки: <code>{escape(str(channel_target))}</code>\n"
+        f"Ссылка на канал: {escape(channel_link)}\n\n"
+        f"Чат для проверки и рефералок: <code>{escape(str(chat_target))}</code>\n"
+        f"Ссылка на чат: {escape(chat_link)}"
+    )
+
+    if warning_lines:
+        text += "\n\n" + "\n".join(warning_lines)
+
+    return text
+
+
 def admin_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(
         InlineKeyboardButton("🎁 Создать МИНИ-РОЗЫГРЫШ", callback_data="create"),
         InlineKeyboardButton("☘️ Создать обычный розыгрыш", callback_data="classic_create"),
+        InlineKeyboardButton("⚙️ Настройки доступа", callback_data="access_settings"),
         InlineKeyboardButton("📊 Статус", callback_data="status"),
         InlineKeyboardButton("🧹 Сбросить черновик", callback_data="cancel"),
     )
@@ -91,12 +387,13 @@ def finish_keyboard() -> InlineKeyboardMarkup:
 
 
 def reset_draft() -> None:
-    global waiting_for_title, classic_step, classic_prize, classic_winners_count
+    global waiting_for_title, classic_step, classic_prize, classic_winners_count, admin_input_state
 
     waiting_for_title = False
     classic_step = None
     classic_prize = ""
     classic_winners_count = 1
+    admin_input_state = None
 
 
 def mini_caption() -> str:
@@ -104,7 +401,7 @@ def mini_caption() -> str:
         "🎁 <b>МИНИ-ИГРА НА 6 ИГРОКОВ ОТ ИЛЮШКИ</b>\n\n"
         f"🏆 <b>ПРИЗ:</b> {escape(giveaway_title)}\n\n"
         "👉 <b>УЧАСТВОВАТЬ ТУТ</b> @brazers_promo\n\n"
-        f"😈 <b>МИНИ-ИЛЮШКИ</b> ({len(participants)}/{MAX_PARTICIPANTS}):\n"
+        f"😀 <b>МИНИ-ИЛЮШКИ</b> ({len(participants)}/{MAX_PARTICIPANTS}):\n"
     )
 
     if not participants:
@@ -116,11 +413,22 @@ def mini_caption() -> str:
     return text
 
 
+def chat_id_for_api(value: Optional[str]):
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if re.fullmatch(r"-?\d+", text):
+        return int(text)
+    return text
+
+
 async def send_admin_panel(chat_id: int) -> None:
     await bot.send_message(chat_id, "Панель управления:", reply_markup=admin_keyboard())
 
 
 async def send_status(chat_id: int) -> None:
+    settings = access_settings()
     mini_status = "завершена" if mini_finished else "идет" if message_id else "не создана"
     classic_status = "идет" if classic_message_id else "не создан"
 
@@ -131,20 +439,404 @@ async def send_status(chat_id: int) -> None:
             f"Мини-игра: {mini_status}\n"
             f"Участников мини-игры: {len(participants)}/{MAX_PARTICIPANTS}\n"
             f"Обычный розыгрыш: {classic_status}\n"
-            f"Участников обычного розыгрыша: {len(classic_participants)}"
+            f"Участников обычного розыгрыша: {len(classic_participants)}\n\n"
+            f"Капча: {'вкл' if settings.get('captcha_enabled') else 'выкл'}\n"
+            f"Подписка: {'обязательна' if settings.get('subscription_required') else 'выкл'}"
         ),
     )
+
+
+async def send_access_settings(chat_id: int) -> None:
+    await bot.send_message(chat_id, access_settings_text(), reply_markup=access_settings_keyboard())
+
+
+async def send_captcha_prompt(chat_id: int, user: types.User, *, renewed: bool = False) -> None:
+    remember_referral_user(user)
+    access_state(user.id)["access_granted"] = False
+    question, answer = create_captcha()
+    referral_data.setdefault("captcha", {})[str(user.id)] = answer
+    save_referral_data()
+
+    intro = "🔐 <b>Проверка от накрутки</b>\n\n"
+    if renewed:
+        intro = "🔄 <b>Новая капча</b>\n\n"
+
+    await bot.send_message(
+        chat_id,
+        intro + f"Реши пример: <b>{question}</b>\nОтвет пришли одним сообщением.",
+        reply_markup=captcha_keyboard(),
+    )
+
+
+async def send_subscription_prompt(chat_id: int, user: types.User, missing: Optional[list[str]] = None) -> None:
+    remember_referral_user(user)
+    settings = access_settings()
+
+    if not settings.get("subscription_required"):
+        await grant_user_access(user)
+        await send_referral_profile(chat_id, user)
+        return
+
+    missing_text = ""
+    if missing:
+        missing_text = "\n\nНе хватает подписки на: <b>" + ", ".join(missing) + "</b>."
+
+    await bot.send_message(
+        chat_id,
+        (
+            "✅ Капча пройдена.\n\n"
+            "Теперь подпишись на обязательные ресурсы и нажми кнопку проверки."
+            + missing_text
+        ),
+        reply_markup=subscription_keyboard(),
+    )
+
+
+async def send_user_home(chat_id: int, user: types.User) -> None:
+    remember_referral_user(user)
+    save_referral_data()
+
+    settings = access_settings()
+    state = access_state(user.id)
+
+    if settings.get("captcha_enabled") and not state.get("captcha_passed"):
+        await send_captcha_prompt(chat_id, user)
+        return
+
+    if settings.get("subscription_required"):
+        missing = await get_missing_subscriptions(user.id)
+        if missing:
+            await send_subscription_prompt(chat_id, user, missing)
+            return
+
+    await grant_user_access(user)
+    await send_referral_profile(chat_id, user)
+
+
+async def get_missing_subscriptions(user_id: int) -> list[str]:
+    settings = access_settings()
+    missing = []
+
+    if not settings.get("subscription_required"):
+        return missing
+
+    checks = [
+        ("канал", settings.get("required_channel_id")),
+        ("чат", settings.get("required_chat_id")),
+    ]
+
+    for label, target in checks:
+        if not target:
+            continue
+
+        try:
+            member = await bot.get_chat_member(chat_id_for_api(target), user_id)
+        except Exception:
+            logging.exception("Could not check subscription for %s in %s", user_id, target)
+            missing.append(label)
+            continue
+
+        status = getattr(member, "status", None)
+        if status in {"left", "kicked"}:
+            missing.append(label)
+
+    return missing
+
+
+async def grant_user_access(user: types.User) -> None:
+    state = access_state(user.id)
+    state["access_granted"] = True
+    save_referral_data()
+    await confirm_pending_referral(user)
+
+
+async def ensure_callback_access(callback: types.CallbackQuery) -> bool:
+    user = callback.from_user
+    remember_referral_user(user)
+    save_referral_data()
+
+    settings = access_settings()
+    state = access_state(user.id)
+
+    if settings.get("captcha_enabled") and not state.get("captcha_passed"):
+        await callback.answer("Сначала напиши боту в личку и пройди капчу через /start", show_alert=True)
+        try:
+            await send_captcha_prompt(user.id, user)
+        except Exception:
+            logging.info("Could not send captcha prompt to %s", user.id)
+        return False
+
+    if settings.get("subscription_required"):
+        missing = await get_missing_subscriptions(user.id)
+        if missing:
+            await callback.answer("Сначала подпишись на канал и чат в личке у бота", show_alert=True)
+            try:
+                await send_subscription_prompt(user.id, user, missing)
+            except Exception:
+                logging.info("Could not send subscription prompt to %s", user.id)
+            return False
+
+    await grant_user_access(user)
+    return True
+
+
+async def get_personal_invite_link(user: types.User) -> str:
+    profile = remember_referral_user(user)
+    user_id = str(user.id)
+    link = profile.get("invite_link")
+    current_target = current_referral_chat_target()
+
+    if link and profile.get("invite_target") == current_target:
+        invite_links = referral_data.setdefault("invite_links", {})
+        if invite_links.get(link) != user_id:
+            invite_links[link] = user_id
+            save_referral_data()
+        return link
+
+    old_link = profile.get("invite_link")
+    if old_link:
+        invite_links = referral_data.setdefault("invite_links", {})
+        if invite_links.get(old_link) == user_id:
+            invite_links.pop(old_link, None)
+
+    try:
+        invite = await bot.create_chat_invite_link(
+            chat_id=chat_id_for_api(current_target),
+            name=f"ref_{user.id}",
+        )
+    except TypeError:
+        invite = await bot.create_chat_invite_link(chat_id=chat_id_for_api(current_target))
+    link = invite.invite_link
+
+    profile["invite_link"] = link
+    profile["invite_target"] = current_target
+    referral_data.setdefault("invite_links", {})[link] = user_id
+    save_referral_data()
+
+    return link
+
+
+async def send_referral_profile(chat_id: int, user: types.User) -> None:
+    try:
+        link = await get_personal_invite_link(user)
+    except Exception:
+        logging.exception("Could not create referral link")
+        await bot.send_message(
+            chat_id,
+            (
+                "Не получилось создать персональную ссылку.\n"
+                "Проверьте, что бот добавлен админом в чат и может приглашать пользователей."
+            ),
+        )
+        return
+
+    await bot.send_message(
+        chat_id,
+        (
+            "🔗 <b>Твоя персональная ссылка для приглашения в чат:</b>\n"
+            f"{escape(link)}\n\n"
+            f"👥 Подтвержденных приглашений: <b>{referral_invites_count(user.id)}</b>\n\n"
+            "Реферал засчитывается только после капчи и обязательной подписки приглашенного пользователя.\n"
+            "Команды: /ref - моя ссылка, /top - топ игроков."
+        ),
+        reply_markup=referral_keyboard(),
+    )
+
+
+async def confirm_pending_referral(user: types.User) -> bool:
+    remember_referral_user(user)
+    user_id = str(user.id)
+
+    joined = referral_data.setdefault("joined", {})
+    if user_id in joined:
+        save_referral_data()
+        return False
+
+    inviter_id = referral_data.setdefault("pending_joined", {}).pop(user_id, None)
+    if not inviter_id or inviter_id == user_id:
+        save_referral_data()
+        return False
+
+    inviter = referral_data.setdefault("users", {}).get(inviter_id)
+    if not inviter:
+        save_referral_data()
+        return False
+
+    inviter["invites"] = int(inviter.get("invites") or 0) + 1
+    joined[user_id] = inviter_id
+    save_referral_data()
+
+    try:
+        await bot.send_message(
+            int(inviter_id),
+            (
+                f"🎉 Приглашение подтверждено: {user_display({'username': user.username, 'name': user.first_name})}.\n"
+                f"Всего подтвержденных приглашений: <b>{inviter['invites']}</b>"
+            ),
+        )
+    except Exception:
+        logging.info("Could not notify inviter %s", inviter_id)
+
+    return True
+
+
+async def register_referral_join(user: types.User, invite_link) -> bool:
+    remember_referral_user(user)
+
+    link = getattr(invite_link, "invite_link", None) if invite_link else None
+    user_id = str(user.id)
+    inviter_id = referral_data.setdefault("invite_links", {}).get(link)
+
+    if not link or not inviter_id or inviter_id == user_id:
+        save_referral_data()
+        return False
+
+    if user_id in referral_data.setdefault("joined", {}):
+        save_referral_data()
+        return False
+
+    pending_joined = referral_data.setdefault("pending_joined", {})
+    if user_id in pending_joined:
+        save_referral_data()
+        return False
+
+    inviter = referral_data.setdefault("users", {}).get(inviter_id)
+    if not inviter:
+        save_referral_data()
+        return False
+
+    pending_joined[user_id] = inviter_id
+    save_referral_data()
+
+    try:
+        await bot.send_message(
+            int(inviter_id),
+            (
+                f"👀 По твоей ссылке зашел {user_display({'username': user.username, 'name': user.first_name})}.\n"
+                "Приглашение засчитается после капчи и обязательной подписки."
+            ),
+        )
+    except Exception:
+        logging.info("Could not notify inviter %s", inviter_id)
+
+    return True
 
 
 @dp.message_handler(commands=["start", "panel"])
 async def start(message: types.Message):
     if is_admin(message.from_user.id):
         await send_admin_panel(message.chat.id)
-    else:
-        await message.answer(
-            "Это бот для розыгрышей @brazers_promo 🎁\n"
-            "Создать такого бота: @tipo_privet67"
-        )
+        return
+
+    await send_user_home(message.chat.id, message.from_user)
+
+
+@dp.message_handler(commands=["ref", "link"])
+async def referral_link_command(message: types.Message):
+    if is_admin(message.from_user.id):
+        await send_admin_panel(message.chat.id)
+        return
+
+    await send_user_home(message.chat.id, message.from_user)
+
+
+@dp.message_handler(commands=["top", "leaders"])
+async def referral_top_command(message: types.Message):
+    if is_admin(message.from_user.id):
+        await send_admin_panel(message.chat.id)
+        return
+
+    remember_referral_user(message.from_user)
+    save_referral_data()
+
+    settings = access_settings()
+    if settings.get("captcha_enabled") and not access_state(message.from_user.id).get("captcha_passed"):
+        await send_captcha_prompt(message.chat.id, message.from_user)
+        return
+
+    if settings.get("subscription_required"):
+        missing = await get_missing_subscriptions(message.from_user.id)
+        if missing:
+            await send_subscription_prompt(message.chat.id, message.from_user, missing)
+            return
+
+    await grant_user_access(message.from_user)
+    await message.answer(referral_top_text(), reply_markup=referral_keyboard())
+
+
+@dp.callback_query_handler(lambda c: c.data == "ref_link")
+async def referral_link_button(callback: types.CallbackQuery):
+    await send_user_home(callback.message.chat.id, callback.from_user)
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data == "ref_top")
+async def referral_top_button(callback: types.CallbackQuery):
+    settings = access_settings()
+    if settings.get("captcha_enabled") and not access_state(callback.from_user.id).get("captcha_passed"):
+        await send_captcha_prompt(callback.message.chat.id, callback.from_user)
+        await callback.answer("Сначала пройди капчу", show_alert=True)
+        return
+
+    if settings.get("subscription_required"):
+        missing = await get_missing_subscriptions(callback.from_user.id)
+        if missing:
+            await send_subscription_prompt(callback.message.chat.id, callback.from_user, missing)
+            await callback.answer("Сначала подпишись на обязательные ресурсы", show_alert=True)
+            return
+
+    await grant_user_access(callback.from_user)
+    remember_referral_user(callback.from_user)
+    save_referral_data()
+    await callback.message.answer(referral_top_text(), reply_markup=referral_keyboard())
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data == "refresh_captcha")
+async def refresh_captcha(callback: types.CallbackQuery):
+    if is_admin(callback.from_user.id):
+        await callback.answer("Админу капча не нужна")
+        return
+
+    await send_captcha_prompt(callback.message.chat.id, callback.from_user, renewed=True)
+    await callback.answer("Капча обновлена")
+
+
+@dp.callback_query_handler(lambda c: c.data == "check_subscriptions")
+async def check_subscriptions(callback: types.CallbackQuery):
+    if is_admin(callback.from_user.id):
+        await callback.answer("Админу проверка подписки не нужна")
+        return
+
+    missing = await get_missing_subscriptions(callback.from_user.id)
+    if missing:
+        await send_subscription_prompt(callback.message.chat.id, callback.from_user, missing)
+        await callback.answer("Подписка еще не подтверждена", show_alert=True)
+        return
+
+    await grant_user_access(callback.from_user)
+    await callback.message.answer("✅ Доступ открыт. Теперь можешь пользоваться реферальной системой.")
+    await send_referral_profile(callback.message.chat.id, callback.from_user)
+    await callback.answer("Подписка подтверждена")
+
+
+@dp.message_handler(lambda message: message.chat.type == "private" and not is_admin(message.from_user.id))
+async def process_user_text(message: types.Message):
+    answer = referral_data.setdefault("captcha", {}).get(str(message.from_user.id))
+    if answer is None:
+        return
+
+    if (message.text or "").strip() != answer:
+        await message.answer("❌ Неверный ответ. Попробуй еще раз или запроси новую капчу.", reply_markup=captcha_keyboard())
+        return
+
+    referral_data.setdefault("captcha", {}).pop(str(message.from_user.id), None)
+    state = access_state(message.from_user.id)
+    state["captcha_passed"] = True
+    save_referral_data()
+
+    await message.answer("✅ Капча пройдена.")
+    await send_subscription_prompt(message.chat.id, message.from_user)
 
 
 @dp.message_handler(commands=["cancel"])
@@ -185,6 +877,110 @@ async def cancel_button(callback: types.CallbackQuery):
     await callback.answer()
 
 
+@dp.callback_query_handler(lambda c: c.data == "access_settings")
+async def access_settings_button(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    reset_draft()
+    await send_access_settings(callback.message.chat.id)
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data == "toggle_captcha")
+async def toggle_captcha(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    settings = access_settings()
+    settings["captcha_enabled"] = not settings.get("captcha_enabled")
+    save_referral_data()
+    await send_access_settings(callback.message.chat.id)
+    await callback.answer("Настройка обновлена")
+
+
+@dp.callback_query_handler(lambda c: c.data == "toggle_subscription")
+async def toggle_subscription(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    settings = access_settings()
+    settings["subscription_required"] = not settings.get("subscription_required")
+    save_referral_data()
+    await send_access_settings(callback.message.chat.id)
+    await callback.answer("Настройка обновлена")
+
+
+@dp.callback_query_handler(lambda c: c.data == "set_channel_target")
+async def set_channel_target(callback: types.CallbackQuery):
+    global admin_input_state
+
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    reset_draft()
+    admin_input_state = "set_channel_target"
+    await callback.message.answer("Пришли @username или id канала для обязательной подписки.")
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data == "set_channel_link")
+async def set_channel_link(callback: types.CallbackQuery):
+    global admin_input_state
+
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    reset_draft()
+    admin_input_state = "set_channel_link"
+    await callback.message.answer("Пришли ссылку на канал: https://t.me/... или @username")
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data == "set_chat_target")
+async def set_chat_target(callback: types.CallbackQuery):
+    global admin_input_state
+
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    reset_draft()
+    admin_input_state = "set_chat_target"
+    await callback.message.answer("Пришли @username или id чата для проверки и рефералок.")
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data == "set_chat_link")
+async def set_chat_link(callback: types.CallbackQuery):
+    global admin_input_state
+
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    reset_draft()
+    admin_input_state = "set_chat_link"
+    await callback.message.answer("Пришли ссылку на чат: https://t.me/... или @username")
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data == "access_back")
+async def access_back(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    reset_draft()
+    await send_admin_panel(callback.message.chat.id)
+    await callback.answer()
+
+
 @dp.callback_query_handler(lambda c: c.data == "create")
 async def create_giveaway(callback: types.CallbackQuery):
     global waiting_for_title
@@ -218,12 +1014,64 @@ async def classic_create(callback: types.CallbackQuery):
 
 @dp.message_handler(lambda message: is_admin(message.from_user.id))
 async def process_admin_text(message: types.Message):
-    global classic_message_id, classic_participants, classic_prize, classic_step
+    global admin_input_state, classic_message_id, classic_participants, classic_prize, classic_step
     global classic_winners_count, giveaway_title, message_id, mini_finished
     global participants, waiting_for_title
 
+    settings = access_settings()
+
+    if admin_input_state == "set_channel_target":
+        target = parse_chat_target(message.text or "")
+        if not target:
+            await message.answer("Не смог понять канал. Пришли @username, ссылку вида https://t.me/name или id.")
+            return
+
+        settings["required_channel_id"] = target
+        settings["required_channel_link"] = settings.get("required_channel_link") or target_to_public_link(target)
+        admin_input_state = None
+        save_referral_data()
+        await message.answer("✅ Канал сохранен.", reply_markup=access_settings_keyboard())
+        return
+
+    if admin_input_state == "set_channel_link":
+        link = normalize_join_link(message.text or "")
+        if not link:
+            await message.answer("Не смог понять ссылку. Пришли https://t.me/... или @username.")
+            return
+
+        settings["required_channel_link"] = link
+        admin_input_state = None
+        save_referral_data()
+        await message.answer("✅ Ссылка на канал сохранена.", reply_markup=access_settings_keyboard())
+        return
+
+    if admin_input_state == "set_chat_target":
+        target = parse_chat_target(message.text or "")
+        if not target:
+            await message.answer("Не смог понять чат. Пришли @username, ссылку вида https://t.me/name или id.")
+            return
+
+        settings["required_chat_id"] = target
+        settings["required_chat_link"] = settings.get("required_chat_link") or target_to_public_link(target)
+        admin_input_state = None
+        save_referral_data()
+        await message.answer("✅ Чат сохранен. Теперь новые реферальные ссылки будут вести туда.", reply_markup=access_settings_keyboard())
+        return
+
+    if admin_input_state == "set_chat_link":
+        link = normalize_join_link(message.text or "")
+        if not link:
+            await message.answer("Не смог понять ссылку. Пришли https://t.me/... или @username.")
+            return
+
+        settings["required_chat_link"] = link
+        admin_input_state = None
+        save_referral_data()
+        await message.answer("✅ Ссылка на чат сохранена.", reply_markup=access_settings_keyboard())
+        return
+
     if classic_step == "prize":
-        classic_prize = message.text.strip()
+        classic_prize = (message.text or "").strip()
         if not classic_prize:
             await message.answer("Приз не должен быть пустым.")
             return
@@ -235,7 +1083,7 @@ async def process_admin_text(message: types.Message):
     if classic_step == "winners":
         try:
             classic_winners_count = int(message.text)
-        except ValueError:
+        except (TypeError, ValueError):
             await message.answer("Введите число.")
             return
 
@@ -268,7 +1116,7 @@ async def process_admin_text(message: types.Message):
     if not waiting_for_title:
         return
 
-    giveaway_title = message.text.strip()
+    giveaway_title = (message.text or "").strip()
     if not giveaway_title:
         await message.answer("Приз не должен быть пустым.")
         return
@@ -294,6 +1142,9 @@ async def classic_join(callback: types.CallbackQuery):
 
     if not classic_message_id:
         await callback.answer("Розыгрыш еще не создан")
+        return
+
+    if not await ensure_callback_access(callback):
         return
 
     user = callback.from_user
@@ -355,6 +1206,9 @@ async def join(callback: types.CallbackQuery):
 
     if mini_finished:
         await callback.answer("Мини-игра уже завершена")
+        return
+
+    if not await ensure_callback_access(callback):
         return
 
     user = callback.from_user
@@ -443,6 +1297,39 @@ async def finish_classic(callback: types.CallbackQuery):
     await callback.message.answer("✅ Обычный розыгрыш завершен.", reply_markup=admin_keyboard())
 
 
+@dp.message_handler(content_types=types.ContentType.NEW_CHAT_MEMBERS)
+async def track_referral_join_message(message: types.Message):
+    if not referral_chat_matches(message.chat):
+        return
+
+    invite_link = getattr(message, "invite_link", None)
+    for user in message.new_chat_members:
+        await register_referral_join(user, invite_link)
+
+
+if hasattr(dp, "chat_member_handler"):
+    @dp.chat_member_handler()
+    async def track_referral_chat_member(update):
+        if not referral_chat_matches(update.chat):
+            return
+
+        old_status = getattr(update.old_chat_member, "status", None)
+        new_status = getattr(update.new_chat_member, "status", None)
+        joined_from_outside = old_status in {"left", "kicked"} and new_status in {
+            "member",
+            "restricted",
+            "administrator",
+            "creator",
+        }
+
+        if joined_from_outside:
+            await register_referral_join(update.new_chat_member.user, getattr(update, "invite_link", None))
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    executor.start_polling(dp, skip_updates=True)
+    executor.start_polling(
+        dp,
+        skip_updates=True,
+        allowed_updates=["message", "callback_query", "chat_member"],
+    )
