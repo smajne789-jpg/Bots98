@@ -103,7 +103,6 @@ def normalize_join_link(value: str) -> Optional[str]:
 
 def default_settings() -> dict:
     return {
-        "captcha_enabled": True,
         "subscription_required": True,
         "required_channel_id": str(CHANNEL_ID),
         "required_channel_link": target_to_public_link(CHANNEL_ID),
@@ -119,7 +118,6 @@ def empty_referral_data() -> dict:
         "joined": {},
         "pending_joined": {},
         "access": {},
-        "captcha": {},
         "settings": default_settings(),
     }
 
@@ -188,11 +186,9 @@ def access_state(user_id: int) -> dict:
     state = referral_data.setdefault("access", {}).setdefault(
         str(user_id),
         {
-            "captcha_passed": False,
             "access_granted": False,
         },
     )
-    state.setdefault("captcha_passed", False)
     state.setdefault("access_granted", False)
     return state
 
@@ -266,24 +262,6 @@ def referral_top_text() -> str:
     return "\n".join(lines)
 
 
-def create_captcha() -> tuple[str, str]:
-    left = random.randint(1, 9)
-    right = random.randint(1, 9)
-
-    if random.choice([True, False]):
-        return f"{left} + {right}", str(left + right)
-
-    if left < right:
-        left, right = right, left
-    return f"{left} - {right}", str(left - right)
-
-
-def captcha_keyboard() -> InlineKeyboardMarkup:
-    kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(InlineKeyboardButton("🔄 Новая капча", callback_data="refresh_captcha"))
-    return kb
-
-
 def subscription_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=1)
     settings = access_settings()
@@ -304,10 +282,6 @@ def access_settings_keyboard() -> InlineKeyboardMarkup:
     settings = access_settings()
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(
-        InlineKeyboardButton(
-            f"🤖 Капча: {'ВКЛ' if settings.get('captcha_enabled') else 'ВЫКЛ'}",
-            callback_data="toggle_captcha",
-        ),
         InlineKeyboardButton(
             f"📌 Подписка: {'ОБЯЗАТЕЛЬНА' if settings.get('subscription_required') else 'ВЫКЛ'}",
             callback_data="toggle_subscription",
@@ -336,7 +310,6 @@ def access_settings_text() -> str:
 
     text = (
         "⚙️ <b>Настройки доступа</b>\n\n"
-        f"Капча: <b>{'включена' if settings.get('captcha_enabled') else 'выключена'}</b>\n"
         f"Обязательная подписка: <b>{'да' if settings.get('subscription_required') else 'нет'}</b>\n\n"
         f"Канал для проверки: <code>{escape(str(channel_target))}</code>\n"
         f"Ссылка на канал: {escape(channel_link)}\n\n"
@@ -355,6 +328,8 @@ def admin_keyboard() -> InlineKeyboardMarkup:
     kb.add(
         InlineKeyboardButton("🎁 Создать МИНИ-РОЗЫГРЫШ", callback_data="create"),
         InlineKeyboardButton("☘️ Создать обычный розыгрыш", callback_data="classic_create"),
+        InlineKeyboardButton("🎛 Активные розыгрыши", callback_data="active_giveaways"),
+        InlineKeyboardButton("📣 Рассылка", callback_data="broadcast_start"),
         InlineKeyboardButton("⚙️ Настройки доступа", callback_data="access_settings"),
         InlineKeyboardButton("📊 Статус", callback_data="status"),
         InlineKeyboardButton("🧹 Сбросить черновик", callback_data="cancel"),
@@ -381,8 +356,28 @@ def finish_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(
         InlineKeyboardButton("🏆 Завершить розыгрыш", callback_data="finish_classic"),
+        InlineKeyboardButton("🗑 Удалить розыгрыш", callback_data="delete_classic"),
         InlineKeyboardButton("📋 Участники", callback_data="classic_members"),
     )
+    return kb
+
+
+def active_giveaways_keyboard() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardMarkup(row_width=1)
+
+    if message_id:
+        kb.add(
+            InlineKeyboardButton("🎁 Завершить мини", callback_data="finish_mini"),
+            InlineKeyboardButton("🗑 Удалить мини", callback_data="delete_mini"),
+        )
+
+    if classic_message_id:
+        kb.add(
+            InlineKeyboardButton("☘️ Завершить обычный", callback_data="finish_classic"),
+            InlineKeyboardButton("🗑 Удалить обычный", callback_data="delete_classic"),
+        )
+
+    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data="active_back"))
     return kb
 
 
@@ -413,6 +408,72 @@ def mini_caption() -> str:
     return text
 
 
+async def delete_mini_giveaway() -> None:
+    global message_id, participants, giveaway_title, mini_finished
+
+    if message_id:
+        try:
+            await bot.delete_message(chat_id=CHANNEL_ID, message_id=message_id)
+        except Exception:
+            logging.exception("Could not delete mini giveaway message")
+
+    message_id = None
+    participants = []
+    giveaway_title = ""
+    mini_finished = False
+
+
+async def finish_mini_giveaway() -> tuple[bool, str]:
+    global message_id, mini_finished
+
+    if not message_id:
+        return False, "Мини-розыгрыш сейчас не активен."
+
+    try:
+        await bot.edit_message_reply_markup(
+            chat_id=CHANNEL_ID,
+            message_id=message_id,
+            reply_markup=join_keyboard(False),
+        )
+    except Exception:
+        logging.info("Could not disable mini giveaway buttons")
+
+    if not participants:
+        await bot.send_message(CHANNEL_ID, "❌ Мини-розыгрыш завершен админом. Участников не было.")
+        message_id = None
+        mini_finished = True
+        return True, "Мини-розыгрыш завершен без участников."
+
+    winner = random.choice(participants)
+    await bot.send_message(
+        CHANNEL_ID,
+        (
+            "🎁 <b>МИНИ-ИГРА ОТ ИЛЮШКИ ЗАВЕРШЕНА АДМИНОМ!</b>\n\n"
+            f"🏆 Победитель:\n{user_display(winner)}\n\n"
+            f"💰 <b>ПРИЗ:</b> {escape(giveaway_title)}"
+        ),
+    )
+    message_id = None
+    mini_finished = True
+    return True, "Мини-розыгрыш завершен."
+
+
+async def delete_classic_giveaway() -> None:
+    global classic_message_id, classic_participants, classic_prize, classic_winners_count, classic_step
+
+    if classic_message_id:
+        try:
+            await bot.delete_message(chat_id=CHANNEL_ID, message_id=classic_message_id)
+        except Exception:
+            logging.exception("Could not delete classic giveaway message")
+
+    classic_message_id = None
+    classic_participants = []
+    classic_prize = ""
+    classic_winners_count = 1
+    classic_step = None
+
+
 def chat_id_for_api(value: Optional[str]):
     if value is None:
         return None
@@ -440,7 +501,6 @@ async def send_status(chat_id: int) -> None:
             f"Участников мини-игры: {len(participants)}/{MAX_PARTICIPANTS}\n"
             f"Обычный розыгрыш: {classic_status}\n"
             f"Участников обычного розыгрыша: {len(classic_participants)}\n\n"
-            f"Капча: {'вкл' if settings.get('captcha_enabled') else 'выкл'}\n"
             f"Подписка: {'обязательна' if settings.get('subscription_required') else 'выкл'}"
         ),
     )
@@ -450,22 +510,37 @@ async def send_access_settings(chat_id: int) -> None:
     await bot.send_message(chat_id, access_settings_text(), reply_markup=access_settings_keyboard())
 
 
-async def send_captcha_prompt(chat_id: int, user: types.User, *, renewed: bool = False) -> None:
-    remember_referral_user(user)
-    access_state(user.id)["access_granted"] = False
-    question, answer = create_captcha()
-    referral_data.setdefault("captcha", {})[str(user.id)] = answer
-    save_referral_data()
-
-    intro = "🔐 <b>Проверка от накрутки</b>\n\n"
-    if renewed:
-        intro = "🔄 <b>Новая капча</b>\n\n"
+async def send_active_giveaways(chat_id: int) -> None:
+    mini_status = "активен" if message_id and not mini_finished else "завершен" if mini_finished else "не создан"
+    classic_status = "активен" if classic_message_id else "не создан"
 
     await bot.send_message(
         chat_id,
-        intro + f"Реши пример: <b>{question}</b>\nОтвет пришли одним сообщением.",
-        reply_markup=captcha_keyboard(),
+        (
+            "🎛 <b>Активные розыгрыши</b>\n\n"
+            f"Мини-розыгрыш: {mini_status}\n"
+            f"Участников мини: {len(participants)}\n\n"
+            f"Обычный розыгрыш: {classic_status}\n"
+            f"Участников обычного: {len(classic_participants)}"
+        ),
+        reply_markup=active_giveaways_keyboard(),
     )
+
+
+def get_broadcast_user_ids() -> list[int]:
+    user_ids = set()
+
+    for storage_key in ("users", "access"):
+        for raw_user_id in referral_data.setdefault(storage_key, {}).keys():
+            try:
+                user_id = int(raw_user_id)
+            except (TypeError, ValueError):
+                continue
+
+            if user_id != ADMIN_ID:
+                user_ids.add(user_id)
+
+    return sorted(user_ids)
 
 
 async def send_subscription_prompt(chat_id: int, user: types.User, missing: Optional[list[str]] = None) -> None:
@@ -484,8 +559,7 @@ async def send_subscription_prompt(chat_id: int, user: types.User, missing: Opti
     await bot.send_message(
         chat_id,
         (
-            "✅ Капча пройдена.\n\n"
-            "Теперь подпишись на обязательные ресурсы и нажми кнопку проверки."
+            "Подпишись на обязательные ресурсы и нажми кнопку проверки."
             + missing_text
         ),
         reply_markup=subscription_keyboard(),
@@ -497,11 +571,6 @@ async def send_user_home(chat_id: int, user: types.User) -> None:
     save_referral_data()
 
     settings = access_settings()
-    state = access_state(user.id)
-
-    if settings.get("captcha_enabled") and not state.get("captcha_passed"):
-        await send_captcha_prompt(chat_id, user)
-        return
 
     if settings.get("subscription_required"):
         missing = await get_missing_subscriptions(user.id)
@@ -556,20 +625,11 @@ async def ensure_callback_access(callback: types.CallbackQuery) -> bool:
     save_referral_data()
 
     settings = access_settings()
-    state = access_state(user.id)
-
-    if settings.get("captcha_enabled") and not state.get("captcha_passed"):
-        await callback.answer("Сначала напиши боту в личку и пройди капчу через /start", show_alert=True)
-        try:
-            await send_captcha_prompt(user.id, user)
-        except Exception:
-            logging.info("Could not send captcha prompt to %s", user.id)
-        return False
 
     if settings.get("subscription_required"):
         missing = await get_missing_subscriptions(user.id)
         if missing:
-            await callback.answer("Сначала подпишись на канал и чат в личке у бота", show_alert=True)
+            await callback.answer("Сначала подпишись на канал и чат, потом нажми кнопку участия еще раз", show_alert=True)
             try:
                 await send_subscription_prompt(user.id, user, missing)
             except Exception:
@@ -636,7 +696,7 @@ async def send_referral_profile(chat_id: int, user: types.User) -> None:
             "🔗 <b>Твоя персональная ссылка для приглашения в чат:</b>\n"
             f"{escape(link)}\n\n"
             f"👥 Подтвержденных приглашений: <b>{referral_invites_count(user.id)}</b>\n\n"
-            "Реферал засчитывается только после капчи и обязательной подписки приглашенного пользователя.\n"
+            "Реферал засчитывается только после обязательной подписки приглашенного пользователя.\n"
             "Команды: /ref - моя ссылка, /top - топ игроков."
         ),
         reply_markup=referral_keyboard(),
@@ -713,7 +773,7 @@ async def register_referral_join(user: types.User, invite_link) -> bool:
             int(inviter_id),
             (
                 f"👀 По твоей ссылке зашел {user_display({'username': user.username, 'name': user.first_name})}.\n"
-                "Приглашение засчитается после капчи и обязательной подписки."
+                "Приглашение засчитается после обязательной подписки."
             ),
         )
     except Exception:
@@ -749,12 +809,7 @@ async def referral_top_command(message: types.Message):
     remember_referral_user(message.from_user)
     save_referral_data()
 
-    settings = access_settings()
-    if settings.get("captcha_enabled") and not access_state(message.from_user.id).get("captcha_passed"):
-        await send_captcha_prompt(message.chat.id, message.from_user)
-        return
-
-    if settings.get("subscription_required"):
+    if access_settings().get("subscription_required"):
         missing = await get_missing_subscriptions(message.from_user.id)
         if missing:
             await send_subscription_prompt(message.chat.id, message.from_user, missing)
@@ -772,13 +827,7 @@ async def referral_link_button(callback: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data == "ref_top")
 async def referral_top_button(callback: types.CallbackQuery):
-    settings = access_settings()
-    if settings.get("captcha_enabled") and not access_state(callback.from_user.id).get("captcha_passed"):
-        await send_captcha_prompt(callback.message.chat.id, callback.from_user)
-        await callback.answer("Сначала пройди капчу", show_alert=True)
-        return
-
-    if settings.get("subscription_required"):
+    if access_settings().get("subscription_required"):
         missing = await get_missing_subscriptions(callback.from_user.id)
         if missing:
             await send_subscription_prompt(callback.message.chat.id, callback.from_user, missing)
@@ -790,16 +839,6 @@ async def referral_top_button(callback: types.CallbackQuery):
     save_referral_data()
     await callback.message.answer(referral_top_text(), reply_markup=referral_keyboard())
     await callback.answer()
-
-
-@dp.callback_query_handler(lambda c: c.data == "refresh_captcha")
-async def refresh_captcha(callback: types.CallbackQuery):
-    if is_admin(callback.from_user.id):
-        await callback.answer("Админу капча не нужна")
-        return
-
-    await send_captcha_prompt(callback.message.chat.id, callback.from_user, renewed=True)
-    await callback.answer("Капча обновлена")
 
 
 @dp.callback_query_handler(lambda c: c.data == "check_subscriptions")
@@ -818,25 +857,6 @@ async def check_subscriptions(callback: types.CallbackQuery):
     await callback.message.answer("✅ Доступ открыт. Теперь можешь пользоваться реферальной системой.")
     await send_referral_profile(callback.message.chat.id, callback.from_user)
     await callback.answer("Подписка подтверждена")
-
-
-@dp.message_handler(lambda message: message.chat.type == "private" and not is_admin(message.from_user.id))
-async def process_user_text(message: types.Message):
-    answer = referral_data.setdefault("captcha", {}).get(str(message.from_user.id))
-    if answer is None:
-        return
-
-    if (message.text or "").strip() != answer:
-        await message.answer("❌ Неверный ответ. Попробуй еще раз или запроси новую капчу.", reply_markup=captcha_keyboard())
-        return
-
-    referral_data.setdefault("captcha", {}).pop(str(message.from_user.id), None)
-    state = access_state(message.from_user.id)
-    state["captcha_passed"] = True
-    save_referral_data()
-
-    await message.answer("✅ Капча пройдена.")
-    await send_subscription_prompt(message.chat.id, message.from_user)
 
 
 @dp.message_handler(commands=["cancel"])
@@ -888,17 +908,14 @@ async def access_settings_button(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data == "toggle_captcha")
-async def toggle_captcha(callback: types.CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data == "active_giveaways")
+async def active_giveaways_button(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
-    settings = access_settings()
-    settings["captcha_enabled"] = not settings.get("captcha_enabled")
-    save_referral_data()
-    await send_access_settings(callback.message.chat.id)
-    await callback.answer("Настройка обновлена")
+    await send_active_giveaways(callback.message.chat.id)
+    await callback.answer()
 
 
 @dp.callback_query_handler(lambda c: c.data == "toggle_subscription")
@@ -912,6 +929,23 @@ async def toggle_subscription(callback: types.CallbackQuery):
     save_referral_data()
     await send_access_settings(callback.message.chat.id)
     await callback.answer("Настройка обновлена")
+
+
+@dp.callback_query_handler(lambda c: c.data == "broadcast_start")
+async def broadcast_start(callback: types.CallbackQuery):
+    global admin_input_state
+
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    reset_draft()
+    admin_input_state = "broadcast_message"
+    await callback.message.answer(
+        "Пришли сообщение для рассылки.\n"
+        "Можно отправить текст, фото, видео, стикер или пересланный пост."
+    )
+    await callback.answer()
 
 
 @dp.callback_query_handler(lambda c: c.data == "set_channel_target")
@@ -970,6 +1004,17 @@ async def set_chat_link(callback: types.CallbackQuery):
     await callback.answer()
 
 
+@dp.callback_query_handler(lambda c: c.data == "active_back")
+async def active_back(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    reset_draft()
+    await send_admin_panel(callback.message.chat.id)
+    await callback.answer()
+
+
 @dp.callback_query_handler(lambda c: c.data == "access_back")
 async def access_back(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -1012,7 +1057,38 @@ async def classic_create(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.message_handler(lambda message: is_admin(message.from_user.id))
+@dp.message_handler(lambda message: is_admin(message.from_user.id) and admin_input_state == "broadcast_message", content_types=types.ContentTypes.ANY)
+async def process_admin_broadcast(message: types.Message):
+    global admin_input_state
+
+    user_ids = get_broadcast_user_ids()
+    if not user_ids:
+        admin_input_state = None
+        await message.answer("Некому отправлять рассылку. Пользователей в базе пока нет.", reply_markup=admin_keyboard())
+        return
+
+    sent_count = 0
+    failed_count = 0
+
+    for user_id in user_ids:
+        try:
+            await bot.copy_message(
+                chat_id=user_id,
+                from_chat_id=message.chat.id,
+                message_id=message.message_id,
+            )
+            sent_count += 1
+        except Exception:
+            failed_count += 1
+
+    admin_input_state = None
+    await message.answer(
+        f"✅ Рассылка завершена.\nУспешно: {sent_count}\nНе доставлено: {failed_count}",
+        reply_markup=admin_keyboard(),
+    )
+
+
+@dp.message_handler(lambda message: is_admin(message.from_user.id), content_types=types.ContentTypes.ANY)
 async def process_admin_text(message: types.Message):
     global admin_input_state, classic_message_id, classic_participants, classic_prize, classic_step
     global classic_winners_count, giveaway_title, message_id, mini_finished
@@ -1071,6 +1147,10 @@ async def process_admin_text(message: types.Message):
         return
 
     if classic_step == "prize":
+        if not message.text:
+            await message.answer("Пришлите приз текстом.")
+            return
+
         classic_prize = (message.text or "").strip()
         if not classic_prize:
             await message.answer("Приз не должен быть пустым.")
@@ -1081,6 +1161,10 @@ async def process_admin_text(message: types.Message):
         return
 
     if classic_step == "winners":
+        if not message.text:
+            await message.answer("Введите число текстом.")
+            return
+
         try:
             classic_winners_count = int(message.text)
         except (TypeError, ValueError):
@@ -1114,6 +1198,10 @@ async def process_admin_text(message: types.Message):
         return
 
     if not waiting_for_title:
+        return
+
+    if not message.text:
+        await message.answer("Пришлите приз текстом.")
         return
 
     giveaway_title = (message.text or "").strip()
@@ -1183,6 +1271,32 @@ async def classic_members(callback: types.CallbackQuery):
     await callback.answer()
 
 
+@dp.callback_query_handler(lambda c: c.data == "finish_mini")
+async def finish_mini(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    ok, text = await finish_mini_giveaway()
+    await callback.answer(text, show_alert=not ok)
+    await callback.message.answer(text, reply_markup=admin_keyboard())
+
+
+@dp.callback_query_handler(lambda c: c.data == "delete_mini")
+async def delete_mini(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    if not message_id:
+        await callback.answer("Мини-розыгрыш не активен", show_alert=True)
+        return
+
+    await delete_mini_giveaway()
+    await callback.answer("Мини-розыгрыш удален")
+    await callback.message.answer("✅ Мини-розыгрыш удален.", reply_markup=admin_keyboard())
+
+
 async def update_message():
     if not message_id:
         return
@@ -1202,7 +1316,7 @@ async def closed(callback: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data == "join")
 async def join(callback: types.CallbackQuery):
-    global mini_finished, participants
+    global message_id, mini_finished, participants
 
     if mini_finished:
         await callback.answer("Мини-игра уже завершена")
@@ -1258,11 +1372,12 @@ async def join(callback: types.CallbackQuery):
             f"💰 <b>ПРИЗ:</b> {escape(giveaway_title)}"
         ),
     )
+    message_id = None
 
 
 @dp.callback_query_handler(lambda c: c.data == "finish_classic")
 async def finish_classic(callback: types.CallbackQuery):
-    global classic_message_id
+    global classic_message_id, classic_participants
 
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
@@ -1293,8 +1408,24 @@ async def finish_classic(callback: types.CallbackQuery):
     )
 
     classic_message_id = None
+    classic_participants = []
     await callback.answer("Розыгрыш завершен")
     await callback.message.answer("✅ Обычный розыгрыш завершен.", reply_markup=admin_keyboard())
+
+
+@dp.callback_query_handler(lambda c: c.data == "delete_classic")
+async def delete_classic(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    if not classic_message_id:
+        await callback.answer("Обычный розыгрыш не активен", show_alert=True)
+        return
+
+    await delete_classic_giveaway()
+    await callback.answer("Обычный розыгрыш удален")
+    await callback.message.answer("✅ Обычный розыгрыш удален.", reply_markup=admin_keyboard())
 
 
 @dp.message_handler(content_types=types.ContentType.NEW_CHAT_MEMBERS)
