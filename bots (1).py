@@ -45,6 +45,15 @@ classic_prize = ""
 classic_winners_count = 1
 classic_message_id = None
 classic_participants = []
+last_classic_message_id = None
+last_classic_prize = ""
+last_classic_participants = []
+last_classic_winners = []
+
+duel_step = None
+duel_prize = ""
+duel_message_id = None
+duel_participants = []
 
 admin_input_state = None
 
@@ -408,6 +417,241 @@ def mini_caption() -> str:
     return text
 
 
+def admin_keyboard() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        InlineKeyboardButton("🎁 Создать МИНИ-РОЗЫГРЫШ", callback_data="create"),
+        InlineKeyboardButton("☘️ Создать обычный розыгрыш", callback_data="classic_create"),
+        InlineKeyboardButton("⚔️ Создать дуэль на 2", callback_data="duel_create"),
+        InlineKeyboardButton("🎛 Активные розыгрыши", callback_data="active_giveaways"),
+        InlineKeyboardButton("📣 Рассылка", callback_data="broadcast_start"),
+        InlineKeyboardButton("⚙️ Настройки доступа", callback_data="access_settings"),
+        InlineKeyboardButton("📊 Статус", callback_data="status"),
+        InlineKeyboardButton("🧹 Сбросить черновик", callback_data="cancel"),
+    )
+    if last_classic_message_id and last_classic_winners:
+        kb.add(InlineKeyboardButton("🎲 Рерол большого розыгрыша", callback_data="classic_reroll_menu"))
+    return kb
+
+
+def duel_keyboard(active: bool = True) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardMarkup()
+    if active:
+        kb.add(InlineKeyboardButton("⚔️ Войти в дуэль", callback_data="duel_join"))
+    else:
+        kb.add(InlineKeyboardButton("❌ Дуэль закрыта", callback_data="duel_closed"))
+    return kb
+
+
+def finish_keyboard() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        InlineKeyboardButton("🏆 Завершить розыгрыш", callback_data="finish_classic_v2"),
+        InlineKeyboardButton("🗑 Удалить розыгрыш", callback_data="delete_classic_v2"),
+        InlineKeyboardButton("📋 Участники", callback_data="classic_members_v2"),
+    )
+    if last_classic_message_id and last_classic_winners:
+        kb.add(InlineKeyboardButton("🎲 Рерол", callback_data="classic_reroll_menu"))
+    return kb
+
+
+def classic_reroll_keyboard() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardMarkup(row_width=1)
+    for index, winner in enumerate(last_classic_winners):
+        kb.add(
+            InlineKeyboardButton(
+                f"🎲 {index + 1}. {user_display(winner)}",
+                callback_data=f"classic_reroll_pick:{index}",
+            )
+        )
+    return kb
+
+
+def active_giveaways_keyboard() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardMarkup(row_width=1)
+
+    if message_id:
+        kb.add(
+            InlineKeyboardButton("🎁 Завершить мини", callback_data="finish_mini"),
+            InlineKeyboardButton("🗑 Удалить мини", callback_data="delete_mini"),
+        )
+
+    if classic_message_id:
+        kb.add(
+            InlineKeyboardButton("☘️ Завершить обычный", callback_data="finish_classic_v2"),
+            InlineKeyboardButton("🗑 Удалить обычный", callback_data="delete_classic_v2"),
+        )
+
+    if duel_message_id:
+        kb.add(
+            InlineKeyboardButton("⚔️ Завершить дуэль", callback_data="finish_duel_v2"),
+            InlineKeyboardButton("🗑 Удалить дуэль", callback_data="delete_duel_v2"),
+        )
+
+    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data="active_back"))
+    return kb
+
+
+def reset_draft() -> None:
+    global waiting_for_title, classic_step, classic_prize, classic_winners_count, duel_step, admin_input_state
+
+    waiting_for_title = False
+    classic_step = None
+    classic_prize = ""
+    classic_winners_count = 1
+    duel_step = None
+    admin_input_state = None
+
+
+def classic_giveaway_caption(prize: str, winners_count: int) -> str:
+    return (
+        f"☘️ <b>{escape(prize)} ОТ ИЛЮШКИ</b>\n\n"
+        "👉 <b>УЧАСТВОВАТЬ ТУТ</b> @brazers_promo\n\n"
+        f"🏆 Победителей: {winners_count}"
+    )
+
+
+def classic_result_caption(prize: str, winners: list[dict]) -> str:
+    winners_text = "\n".join(user_display(winner) for winner in winners)
+    return (
+        f"☘️ <b>{escape(prize)} ОТ ИЛЮШКИ</b>\n\n"
+        "👉 <b>УЧАСТВОВАТЬ ТУТ</b> @brazers_promo\n\n"
+        f"✨ <b>Победители:</b>\n{winners_text}"
+    )
+
+
+def duel_caption() -> str:
+    text = (
+        "⚔️ <b>ДУЭЛЬ НА 2 ИГРОКОВ</b>\n\n"
+        f"🏆 <b>ПРИЗ:</b> {escape(duel_prize)}\n\n"
+        "🎲 Как только зайдут два игрока, бот сам бросит кубики.\n\n"
+        f"👥 <b>Дуэлянты</b> ({len(duel_participants)}/2):\n"
+    )
+
+    if not duel_participants:
+        return text + "(пусто)"
+
+    for index, participant in enumerate(duel_participants, start=1):
+        text += f"{index}. {user_display(participant)}\n"
+
+    return text
+
+
+def copy_users(users: list[dict]) -> list[dict]:
+    return [user.copy() for user in users]
+
+
+def reset_last_classic_result() -> None:
+    global last_classic_message_id, last_classic_prize, last_classic_participants, last_classic_winners
+
+    last_classic_message_id = None
+    last_classic_prize = ""
+    last_classic_participants = []
+    last_classic_winners = []
+
+
+def save_last_classic_result(source_message_id: int, prize: str, participants_list: list[dict], winners: list[dict]) -> None:
+    global last_classic_message_id, last_classic_prize, last_classic_participants, last_classic_winners
+
+    last_classic_message_id = source_message_id
+    last_classic_prize = prize
+    last_classic_participants = copy_users(participants_list)
+    last_classic_winners = copy_users(winners)
+
+
+async def update_duel_message() -> None:
+    if not duel_message_id:
+        return
+
+    await bot.edit_message_caption(
+        chat_id=CHANNEL_ID,
+        message_id=duel_message_id,
+        caption=duel_caption(),
+        reply_markup=duel_keyboard(len(duel_participants) < 2),
+    )
+
+
+async def delete_duel_giveaway() -> None:
+    global duel_message_id, duel_participants, duel_prize, duel_step
+
+    if duel_message_id:
+        try:
+            await bot.delete_message(chat_id=CHANNEL_ID, message_id=duel_message_id)
+        except Exception:
+            logging.exception("Could not delete duel giveaway message")
+
+    duel_message_id = None
+    duel_participants = []
+    duel_prize = ""
+    duel_step = None
+
+
+async def finish_duel_giveaway() -> tuple[bool, str]:
+    global duel_message_id, duel_participants, duel_prize, duel_step
+
+    if not duel_message_id:
+        return False, "Дуэль сейчас не активна."
+
+    if len(duel_participants) < 2:
+        return False, "Для дуэли нужно 2 участника."
+
+    try:
+        await bot.edit_message_reply_markup(
+            chat_id=CHANNEL_ID,
+            message_id=duel_message_id,
+            reply_markup=duel_keyboard(False),
+        )
+    except Exception:
+        logging.info("Could not disable duel buttons")
+
+    rounds = []
+    while True:
+        first_roll_msg = await bot.send_dice(CHANNEL_ID)
+        await asyncio.sleep(4)
+        second_roll_msg = await bot.send_dice(CHANNEL_ID)
+        await asyncio.sleep(4)
+
+        first_roll = first_roll_msg.dice.value
+        second_roll = second_roll_msg.dice.value
+        rounds.append((first_roll, second_roll))
+
+        if first_roll != second_roll:
+            break
+
+        await bot.send_message(CHANNEL_ID, "🤝 Ничья в дуэли. Перебрасываем кубики...")
+
+    first_player = duel_participants[0]
+    second_player = duel_participants[1]
+    winner = first_player if rounds[-1][0] > rounds[-1][1] else second_player
+    loser = second_player if winner["id"] == first_player["id"] else first_player
+
+    round_lines = []
+    for index, (first_roll, second_roll) in enumerate(rounds, start=1):
+        title = f"Раунд {index}" if len(rounds) > 1 else "Броски"
+        round_lines.append(
+            f"{title}: {user_display(first_player)} <b>{first_roll}</b> vs {user_display(second_player)} <b>{second_roll}</b>"
+        )
+
+    await bot.edit_message_caption(
+        chat_id=CHANNEL_ID,
+        message_id=duel_message_id,
+        caption=(
+            "⚔️ <b>ДУЭЛЬ ЗАВЕРШЕНА</b>\n\n"
+            f"✨ Победитель: {user_display(winner)}\n"
+            f"💔 Не повезло: {user_display(loser)}\n\n"
+            + "\n".join(round_lines)
+            + f"\n\n🏆 <b>ПРИЗ:</b> {escape(duel_prize)}"
+        ),
+        reply_markup=None,
+    )
+
+    duel_message_id = None
+    duel_participants = []
+    duel_prize = ""
+    duel_step = None
+    return True, "Дуэль завершена."
+
+
 async def delete_mini_giveaway() -> None:
     global message_id, participants, giveaway_title, mini_finished
 
@@ -522,6 +766,49 @@ async def send_active_giveaways(chat_id: int) -> None:
             f"Участников мини: {len(participants)}\n\n"
             f"Обычный розыгрыш: {classic_status}\n"
             f"Участников обычного: {len(classic_participants)}"
+        ),
+        reply_markup=active_giveaways_keyboard(),
+    )
+
+
+async def send_status(chat_id: int) -> None:
+    settings = access_settings()
+    mini_status = "завершена" if mini_finished else "идет" if message_id else "не создана"
+    classic_status = "идет" if classic_message_id else "завершен" if last_classic_message_id else "не создан"
+    duel_status = "идет" if duel_message_id else "не создана"
+
+    await bot.send_message(
+        chat_id,
+        (
+            "📊 <b>Статус</b>\n\n"
+            f"Мини-игра: {mini_status}\n"
+            f"Участников мини-игры: {len(participants)}/{MAX_PARTICIPANTS}\n"
+            f"Обычный розыгрыш: {classic_status}\n"
+            f"Участников обычного розыгрыша: {len(classic_participants)}\n"
+            f"Последних победителей для рерола: {len(last_classic_winners)}\n"
+            f"Дуэль: {duel_status}\n"
+            f"Участников дуэли: {len(duel_participants)}/2\n\n"
+            f"Подписка: {'обязательна' if settings.get('subscription_required') else 'выкл'}"
+        ),
+    )
+
+
+async def send_active_giveaways(chat_id: int) -> None:
+    mini_status = "активен" if message_id and not mini_finished else "завершен" if mini_finished else "не создан"
+    classic_status = "активен" if classic_message_id else "завершен" if last_classic_message_id else "не создан"
+    duel_status = "активна" if duel_message_id else "не создана"
+
+    await bot.send_message(
+        chat_id,
+        (
+            "🎛 <b>Активные розыгрыши</b>\n\n"
+            f"Мини-розыгрыш: {mini_status}\n"
+            f"Участников мини: {len(participants)}\n\n"
+            f"Обычный розыгрыш: {classic_status}\n"
+            f"Участников обычного: {len(classic_participants)}\n"
+            f"Рерол доступен: {'да' if last_classic_message_id and last_classic_winners else 'нет'}\n\n"
+            f"Дуэль: {duel_status}\n"
+            f"Участников дуэли: {len(duel_participants)}"
         ),
         reply_markup=active_giveaways_keyboard(),
     )
@@ -1057,6 +1344,20 @@ async def classic_create(callback: types.CallbackQuery):
     await callback.answer()
 
 
+@dp.callback_query_handler(lambda c: c.data == "duel_create")
+async def duel_create(callback: types.CallbackQuery):
+    global duel_step
+
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    reset_draft()
+    duel_step = "prize"
+    await callback.message.answer("⚔️ Введите приз для дуэли на 2 игроков:")
+    await callback.answer()
+
+
 @dp.message_handler(lambda message: is_admin(message.from_user.id) and admin_input_state == "broadcast_message", content_types=types.ContentTypes.ANY)
 async def process_admin_broadcast(message: types.Message):
     global admin_input_state
@@ -1092,7 +1393,7 @@ async def process_admin_broadcast(message: types.Message):
 async def process_admin_text(message: types.Message):
     global admin_input_state, classic_message_id, classic_participants, classic_prize, classic_step
     global classic_winners_count, giveaway_title, message_id, mini_finished
-    global participants, waiting_for_title
+    global participants, waiting_for_title, duel_step, duel_prize, duel_message_id, duel_participants
 
     settings = access_settings()
 
@@ -1175,6 +1476,7 @@ async def process_admin_text(message: types.Message):
             await message.answer("Победителей должно быть минимум 1.")
             return
 
+        reset_last_classic_result()
         classic_participants = []
         msg = await bot.send_photo(
             CHANNEL_ID,
@@ -1195,6 +1497,30 @@ async def process_admin_text(message: types.Message):
             "✅ Обычный розыгрыш создан.",
             reply_markup=finish_keyboard(),
         )
+        return
+
+    if duel_step == "prize":
+        if not message.text:
+            await message.answer("Пришлите приз текстом.")
+            return
+
+        duel_prize = (message.text or "").strip()
+        if not duel_prize:
+            await message.answer("Приз не должен быть пустым.")
+            return
+
+        duel_participants = []
+        duel_step = None
+
+        msg = await bot.send_photo(
+            CHANNEL_ID,
+            photo=GIVEAWAY_PHOTO,
+            caption=duel_caption(),
+            reply_markup=duel_keyboard(True),
+        )
+        duel_message_id = msg.message_id
+
+        await message.answer("✅ Дуэль создана.", reply_markup=admin_keyboard())
         return
 
     if not waiting_for_title:
@@ -1426,6 +1752,222 @@ async def delete_classic(callback: types.CallbackQuery):
     await delete_classic_giveaway()
     await callback.answer("Обычный розыгрыш удален")
     await callback.message.answer("✅ Обычный розыгрыш удален.", reply_markup=admin_keyboard())
+
+
+@dp.callback_query_handler(lambda c: c.data == "duel_closed")
+async def duel_closed(callback: types.CallbackQuery):
+    await callback.answer("Дуэль уже закрыта")
+
+
+@dp.callback_query_handler(lambda c: c.data == "duel_join")
+async def duel_join(callback: types.CallbackQuery):
+    global duel_participants
+
+    if not duel_message_id:
+        await callback.answer("Дуэль еще не создана")
+        return
+
+    if not await ensure_callback_access(callback):
+        return
+
+    user = callback.from_user
+
+    if len(duel_participants) >= 2:
+        await callback.answer("Лимит игроков уже набран")
+        return
+
+    if user.id in [p["id"] for p in duel_participants]:
+        await callback.answer("Ты уже в дуэли")
+        return
+
+    duel_participants.append(
+        {
+            "id": user.id,
+            "username": user.username,
+            "name": user.first_name,
+        }
+    )
+
+    await callback.answer(f"Ты вошел в дуэль! Место: {len(duel_participants)}/2")
+    await update_duel_message()
+
+    if len(duel_participants) < 2:
+        return
+
+    await bot.send_message(CHANNEL_ID, "⚔️ Дуэль собрана. Бросаем кубики...")
+    await finish_duel_giveaway()
+
+
+@dp.callback_query_handler(lambda c: c.data == "classic_members_v2")
+async def classic_members_v2(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    source = classic_participants or last_classic_participants
+    title = "Участники обычного розыгрыша" if classic_participants else "Участники последнего завершенного розыгрыша"
+
+    if not source:
+        await callback.message.answer("В обычном розыгрыше пока нет участников.")
+        await callback.answer()
+        return
+
+    members = "\n".join(
+        f"{index}. {user_display(participant)}"
+        for index, participant in enumerate(source, start=1)
+    )
+    await callback.message.answer(f"📋 <b>{title}:</b>\n{members}")
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data == "finish_classic_v2")
+async def finish_classic_v2(callback: types.CallbackQuery):
+    global classic_message_id, classic_participants, classic_prize
+
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    if not classic_message_id:
+        await callback.answer("Обычный розыгрыш еще не создан")
+        return
+
+    if not classic_participants:
+        await callback.answer("Нет участников")
+        return
+
+    winners = random.sample(
+        classic_participants,
+        min(classic_winners_count, len(classic_participants)),
+    )
+    current_message_id = classic_message_id
+    current_prize = classic_prize
+
+    await bot.edit_message_caption(
+        chat_id=CHANNEL_ID,
+        message_id=current_message_id,
+        caption=classic_result_caption(current_prize, winners),
+        reply_markup=None,
+    )
+
+    save_last_classic_result(current_message_id, current_prize, classic_participants, winners)
+    classic_message_id = None
+    classic_participants = []
+    classic_prize = ""
+
+    await callback.answer("Розыгрыш завершен")
+    await callback.message.answer("✅ Обычный розыгрыш завершен. Рерол доступен из админ-панели.", reply_markup=admin_keyboard())
+
+
+@dp.callback_query_handler(lambda c: c.data == "delete_classic_v2")
+async def delete_classic_v2(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    if not classic_message_id:
+        await callback.answer("Обычный розыгрыш не активен", show_alert=True)
+        return
+
+    await delete_classic_giveaway()
+    await callback.answer("Обычный розыгрыш удален")
+    await callback.message.answer("✅ Обычный розыгрыш удален.", reply_markup=admin_keyboard())
+
+
+@dp.callback_query_handler(lambda c: c.data == "classic_reroll_menu")
+async def classic_reroll_menu(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    if not last_classic_message_id or not last_classic_winners:
+        await callback.answer("Нет завершенного большого розыгрыша для рерола", show_alert=True)
+        return
+
+    await callback.message.answer(
+        "🎲 Выбери победителя, которого нужно рерольнуть:",
+        reply_markup=classic_reroll_keyboard(),
+    )
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith("classic_reroll_pick:"))
+async def classic_reroll_pick(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    if not last_classic_message_id or not last_classic_winners:
+        await callback.answer("Рерол недоступен", show_alert=True)
+        return
+
+    try:
+        winner_index = int(callback.data.split(":", 1)[1])
+    except (IndexError, ValueError):
+        await callback.answer("Не удалось определить победителя", show_alert=True)
+        return
+
+    if winner_index < 0 or winner_index >= len(last_classic_winners):
+        await callback.answer("Такого победителя нет", show_alert=True)
+        return
+
+    current_winner = last_classic_winners[winner_index]
+    busy_ids = {
+        winner["id"]
+        for index, winner in enumerate(last_classic_winners)
+        if index != winner_index
+    }
+    candidate_pool = [
+        participant
+        for participant in last_classic_participants
+        if participant["id"] not in busy_ids and participant["id"] != current_winner["id"]
+    ]
+
+    if not candidate_pool:
+        await callback.answer("Нет свободных участников для замены", show_alert=True)
+        return
+
+    new_winner = random.choice(candidate_pool).copy()
+    last_classic_winners[winner_index] = new_winner
+
+    await bot.edit_message_caption(
+        chat_id=CHANNEL_ID,
+        message_id=last_classic_message_id,
+        caption=classic_result_caption(last_classic_prize, last_classic_winners),
+        reply_markup=None,
+    )
+
+    await callback.answer("Рерол выполнен")
+    await callback.message.answer(
+        f"🎲 Рерол выполнен.\nБыло: {user_display(current_winner)}\nСтало: {user_display(new_winner)}",
+        reply_markup=admin_keyboard(),
+    )
+
+
+@dp.callback_query_handler(lambda c: c.data == "finish_duel_v2")
+async def finish_duel_v2(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    ok, text = await finish_duel_giveaway()
+    await callback.answer(text, show_alert=not ok)
+    await callback.message.answer(text, reply_markup=admin_keyboard())
+
+
+@dp.callback_query_handler(lambda c: c.data == "delete_duel_v2")
+async def delete_duel_v2(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    if not duel_message_id:
+        await callback.answer("Дуэль не активна", show_alert=True)
+        return
+
+    await delete_duel_giveaway()
+    await callback.answer("Дуэль удалена")
+    await callback.message.answer("✅ Дуэль удалена.", reply_markup=admin_keyboard())
 
 
 @dp.message_handler(content_types=types.ContentType.NEW_CHAT_MEMBERS)
