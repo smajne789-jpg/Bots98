@@ -450,13 +450,13 @@ def premium_emoji(name: str, fallback: str) -> str:
     emoji_id = (PREMIUM_EMOJI_IDS.get(name) or "").strip()
     if not re.fullmatch(r"\d+", emoji_id):
         return fallback
-    return f'<tg-emoji emoji-id="{emoji_id}">{fallback}</tg-emoji>'
+    return f'<tg-emoji emoji-id="{emoji_id}"></tg-emoji>'
 
 
 def premium_emoji_id(emoji_id: str, fallback: str) -> str:
     if not re.fullmatch(r"\d+", (emoji_id or "").strip()):
         return fallback
-    return f'<tg-emoji emoji-id="{emoji_id}">{fallback}</tg-emoji>'
+    return f'<tg-emoji emoji-id="{emoji_id}"></tg-emoji>'
 
 
 def admin_keyboard() -> InlineKeyboardMarkup:
