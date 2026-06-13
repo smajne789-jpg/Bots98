@@ -431,10 +431,10 @@ def mini_caption() -> str:
     pointer = premium_emoji_id("5220049530107475342", "👉")
     players_icon = premium_emoji_id("5253539825360843975", "😀")
     text = (
-        f"{gift} <b>МИНИ-ИГРА НА 6 ИГРОКОВ ОТ ИЛЮШКИ</b>\n\n"
+        f"{gift} <b>МИНИ-ИГРА НА 6 ИГРОКОВ ОТ МЕХАНИКА</b>\n\n"
         f"{trophy} <b>ПРИЗ:</b> {escape(giveaway_title)}\n\n"
-        f"{pointer} <b>УЧАСТВОВАТЬ ТУТ</b> @brazers_promo\n\n"
-        f"{players_icon} <b>МИНИ-ИЛЮШКИ</b> ({len(participants)}/{MAX_PARTICIPANTS}):\n"
+        f"{pointer} <b>УЧАСТВОВАТЬ ТУТ</b> @MEXANICK2\n\n"
+        f"{players_icon} <b>МИНИ-МЕХАНИКИ</b> ({len(participants)}/{MAX_PARTICIPANTS}):\n"
     )
 
     if not participants:
@@ -556,8 +556,8 @@ def classic_giveaway_caption(prize: str, winners_count: int) -> str:
     classic_pointer = premium_emoji_id("5456140674028019486", "👉")
     trophy = premium_emoji("trophy", "🏆")
     return (
-        f"{classic_title} <b>{escape(prize)} ОТ ИЛЮШКИ</b>\n\n"
-        f"{classic_pointer} <b>УЧАСТВОВАТЬ ТУТ</b> @brazers_promo\n\n"
+        f"{classic_title} <b>{escape(prize)} ОТ МЕХАНИКА</b>\n\n"
+        f"{classic_pointer} <b>УЧАСТВОВАТЬ ТУТ</b> @MEXANICK2\n\n"
         f"{trophy} Победителей: {winners_count}"
     )
 
@@ -568,8 +568,8 @@ def classic_result_caption(prize: str, winners: list[dict]) -> str:
     classic_winners = premium_emoji_id("5217822164362739968", "✨")
     winners_text = "\n".join(user_display(winner) for winner in winners)
     return (
-        f"{classic_title} <b>{escape(prize)} ОТ ИЛЮШКИ</b>\n\n"
-        f"{classic_pointer} <b>УЧАСТВОВАТЬ ТУТ</b> @brazers_promo\n\n"
+        f"{classic_title} <b>{escape(prize)} ОТ МЕХАНИКА</b>\n\n"
+        f"{classic_pointer} <b>УЧАСТВОВАТЬ ТУТ</b> @MEXANICK2\n\n"
         f"{classic_winners} <b>Победители:</b>\n{winners_text}"
     )
 
@@ -764,7 +764,7 @@ async def finish_mini_giveaway() -> tuple[bool, str]:
     await bot.send_message(
         CHANNEL_ID,
         (
-            f"{premium_emoji_id('5240335244762038648', '🎁')} <b>МИНИ-ИГРА ОТ ИЛЮШКИ ЗАВЕРШЕНА АДМИНОМ!</b>\n\n"
+            f"{premium_emoji_id('5240335244762038648', '🎁')} <b>МИНИ-ИГРА ОТ МЕХАНИКА ЗАВЕРШЕНА!</b>\n\n"
             f"{premium_emoji_id('5217822164362739968', '🏆')} Победитель:\n{user_display(winner)}\n\n"
             f"{premium_emoji_id('5280602079285493593', '💰')} <b>ПРИЗ:</b> {escape(giveaway_title)}"
         ),
@@ -1747,7 +1747,7 @@ async def join(callback: types.CallbackQuery):
     mini_finished = True
     await bot.send_message(
         CHANNEL_ID,
-        f"{premium_emoji_id('5890971177484029249', '🎲')} Набрано 6 МИНИ-ИЛЮШЕК! Определяем победителя...",
+        f"{premium_emoji_id('5890971177484029249', '🎲')} Набрано 6 МИНИ-МЕХАНИКА! Определяем победителя...",
     )
 
     dice_msg = await bot.send_dice(CHANNEL_ID)
@@ -1760,7 +1760,7 @@ async def join(callback: types.CallbackQuery):
     await bot.send_message(
         CHANNEL_ID,
         (
-            f"{premium_emoji_id('5240335244762038648', '🎁')} <b>МИНИ-ИГРА ОТ ИЛЮШКИ ЗАВЕРШЕНА!</b>\n\n"
+            f"{premium_emoji_id('5240335244762038648', '🎁')} <b>МИНИ-ИГРА ОТ МЕХАНИКА ЗАВЕРШЕНА!</b>\n\n"
             f"{premium_emoji_id('5890971177484029249', '🎲')} Выпало число: <b>{dice_value}</b>\n\n"
             f"{premium_emoji_id('5217822164362739968', '🏆')} Победитель:\n{user_display(winner)}\n\n"
             f"{premium_emoji_id('5280602079285493593', '💰')} <b>ПРИЗ:</b> {escape(giveaway_title)}"
@@ -1795,8 +1795,8 @@ async def finish_classic(callback: types.CallbackQuery):
         chat_id=CHANNEL_ID,
         message_id=classic_message_id,
         caption=(
-            f"☘️ <b>{escape(classic_prize)} ОТ ИЛЮШКИ</b>\n\n"
-            "👉 <b>УЧАСТВОВАТЬ ТУТ</b> @brazers_promo\n\n"
+            f"☘️ <b>{escape(classic_prize)} ОТ МЕХАНИКА</b>\n\n"
+            "👉 <b>УЧАСТВОВАТЬ ТУТ</b> @MEXANICK2\n\n"
             f"✨ <b>Победители:</b>\n{winners_text}"
         ),
     )
@@ -1927,7 +1927,7 @@ async def finish_classic_v2(callback: types.CallbackQuery):
     classic_prize = ""
 
     await callback.answer("Розыгрыш завершен")
-    await callback.message.answer("✅ Обычный розыгрыш завершен. Рерол доступен из админ-панели.", reply_markup=admin_keyboard())
+    await callback.message.answer("✅ Обычный розыгрыш завершен.", reply_markup=admin_keyboard())
 
 
 @dp.callback_query_handler(lambda c: c.data == "delete_classic_v2")
