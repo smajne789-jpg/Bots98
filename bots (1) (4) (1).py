@@ -22,18 +22,35 @@ MAX_PARTICIPANTS = 6
 GIVEAWAY_PHOTO = "AgACAgIAAxkBAANSaiOILtbjI9uXPclOjby3azTEWqQAAqodaxu6QRlJLp2T9fXeiH0BAAMCAAN5AAM7BA"
 REFERRAL_DATA_FILE = Path(__file__).with_name("referrals.json")
 REFERRAL_TOP_LIMIT = 10
+PREMIUM_EMOJI_ENV_VARS = {
+    "gift": "PREMIUM_EMOJI_GIFT_ID",
+    "trophy": "PREMIUM_EMOJI_TROPHY_ID",
+    "pointer": "PREMIUM_EMOJI_POINTER_ID",
+    "players": "PREMIUM_EMOJI_PLAYERS_ID",
+    "clover": "PREMIUM_EMOJI_CLOVER_ID",
+    "swords": "PREMIUM_EMOJI_SWORDS_ID",
+    "dice": "PREMIUM_EMOJI_DICE_ID",
+    "sparkles": "PREMIUM_EMOJI_SPARKLES_ID",
+    "money": "PREMIUM_EMOJI_MONEY_ID",
+    "broken_heart": "PREMIUM_EMOJI_BROKEN_HEART_ID",
+    "handshake": "PREMIUM_EMOJI_HANDSHAKE_ID",
+}
+PREMIUM_EMOJI_DEFAULT_IDS = {
+    "gift": "5384108682290152083",
+    "trophy": "5291914649481007565",
+    "pointer": "5220049530107475342",
+    "players": "5253539825360843975",
+    "clover": "5442939099906325301",
+    "swords": "5454014806950429357",
+    "dice": "5890971177484029249",
+    "sparkles": "5217822164362739968",
+    "money": "5280602079285493593",
+    "broken_heart": "5249244862359812334",
+    "handshake": "5258420634785947640",
+}
 PREMIUM_EMOJI_IDS = {
-    "gift": os.getenv("PREMIUM_EMOJI_GIFT_ID"),
-    "trophy": os.getenv("PREMIUM_EMOJI_TROPHY_ID"),
-    "pointer": os.getenv("PREMIUM_EMOJI_POINTER_ID"),
-    "players": os.getenv("PREMIUM_EMOJI_PLAYERS_ID"),
-    "clover": os.getenv("PREMIUM_EMOJI_CLOVER_ID"),
-    "swords": os.getenv("PREMIUM_EMOJI_SWORDS_ID"),
-    "dice": os.getenv("PREMIUM_EMOJI_DICE_ID"),
-    "sparkles": os.getenv("PREMIUM_EMOJI_SPARKLES_ID"),
-    "money": os.getenv("PREMIUM_EMOJI_MONEY_ID"),
-    "broken_heart": os.getenv("PREMIUM_EMOJI_BROKEN_HEART_ID"),
-    "handshake": os.getenv("PREMIUM_EMOJI_HANDSHAKE_ID"),
+    name: os.getenv(env_var) or PREMIUM_EMOJI_DEFAULT_IDS[name]
+    for name, env_var in PREMIUM_EMOJI_ENV_VARS.items()
 }
 
 if not TOKEN or not ADMIN_ID_RAW or not CHANNEL_ID:
@@ -426,10 +443,10 @@ def reset_draft() -> None:
 
 
 def mini_caption() -> str:
-    gift = premium_emoji_id("5384108682290152083", "🎁")
-    trophy = premium_emoji_id("5291914649481007565", "🏆")
-    pointer = premium_emoji_id("5220049530107475342", "👉")
-    players_icon = premium_emoji_id("5253539825360843975", "😀")
+    gift = premium_emoji("gift", "🎁")
+    trophy = premium_emoji("trophy", "🏆")
+    pointer = premium_emoji("pointer", "👉")
+    players_icon = premium_emoji("players", "😀")
     text = (
         f"{gift} <b>МИНИ-ИГРА НА 6 ИГРОКОВ ОТ ИЛЮШКИ</b>\n\n"
         f"{trophy} <b>ПРИЗ:</b> {escape(giveaway_title)}\n\n"
@@ -552,8 +569,8 @@ def reset_draft() -> None:
 
 
 def classic_giveaway_caption(prize: str, winners_count: int) -> str:
-    classic_title = premium_emoji_id("5442939099906325301", "☘️")
-    classic_pointer = premium_emoji_id("5456140674028019486", "👉")
+    classic_title = premium_emoji("clover", "☘️")
+    classic_pointer = premium_emoji("pointer", "👉")
     trophy = premium_emoji("trophy", "🏆")
     return (
         f"{classic_title} <b>{escape(prize)} ОТ ИЛЮШКИ</b>\n\n"
@@ -563,9 +580,9 @@ def classic_giveaway_caption(prize: str, winners_count: int) -> str:
 
 
 def classic_result_caption(prize: str, winners: list[dict]) -> str:
-    classic_title = premium_emoji_id("5442939099906325301", "☘️")
-    classic_pointer = premium_emoji_id("5456140674028019486", "👉")
-    classic_winners = premium_emoji_id("5217822164362739968", "✨")
+    classic_title = premium_emoji("clover", "☘️")
+    classic_pointer = premium_emoji("pointer", "👉")
+    classic_winners = premium_emoji("sparkles", "✨")
     winners_text = "\n".join(user_display(winner) for winner in winners)
     return (
         f"{classic_title} <b>{escape(prize)} ОТ ИЛЮШКИ</b>\n\n"
@@ -575,10 +592,10 @@ def classic_result_caption(prize: str, winners: list[dict]) -> str:
 
 
 def duel_caption() -> str:
-    swords = premium_emoji_id("5454014806950429357", "⚔️")
-    trophy = premium_emoji_id("5276032951342088188", "🏆")
-    dice = premium_emoji_id("5890924594268737731", "🎲")
-    players_icon = premium_emoji_id("5206523956537865948", "👥")
+    swords = premium_emoji("swords", "⚔️")
+    trophy = premium_emoji("trophy", "🏆")
+    dice = premium_emoji("dice", "🎲")
+    players_icon = premium_emoji("players", "👥")
     text = (
         f"{swords} <b>ДУЭЛЬ НА 2 ИГРОКОВ</b>\n\n"
         f"{trophy} <b>ПРИЗ:</b> {escape(duel_prize)}\n\n"
@@ -596,10 +613,10 @@ def duel_caption() -> str:
 
 
 def duel_result_caption(winner: dict, loser: dict, round_lines: list[str]) -> str:
-    swords = premium_emoji_id("5427168083074628963", "⚔️")
-    sparkles = premium_emoji_id("5461151367559141950", "✨")
-    broken_heart = premium_emoji_id("5249244862359812334", "💔")
-    trophy = premium_emoji_id("5206523956537865948", "🏆")
+    swords = premium_emoji("swords", "⚔️")
+    sparkles = premium_emoji("sparkles", "✨")
+    broken_heart = premium_emoji("broken_heart", "💔")
+    trophy = premium_emoji("trophy", "🏆")
     return (
         f"{swords} <b>ДУЭЛЬ ЗАВЕРШЕНА</b>\n\n"
         f"{sparkles} Победитель: {user_display(winner)}\n"
@@ -692,7 +709,7 @@ async def finish_duel_giveaway() -> tuple[bool, str]:
 
         await bot.send_message(
             CHANNEL_ID,
-            f"{premium_emoji_id('5258420634785947640', '🤝')} Ничья в дуэли. Перебрасываем кубики...",
+            f"{premium_emoji('handshake', '🤝')} Ничья в дуэли. Перебрасываем кубики...",
         )
 
     first_player = duel_participants[0]
@@ -764,9 +781,9 @@ async def finish_mini_giveaway() -> tuple[bool, str]:
     await bot.send_message(
         CHANNEL_ID,
         (
-            f"{premium_emoji_id('5240335244762038648', '🎁')} <b>МИНИ-ИГРА ОТ ИЛЮШКИ ЗАВЕРШЕНА АДМИНОМ!</b>\n\n"
-            f"{premium_emoji_id('5217822164362739968', '🏆')} Победитель:\n{user_display(winner)}\n\n"
-            f"{premium_emoji_id('5280602079285493593', '💰')} <b>ПРИЗ:</b> {escape(giveaway_title)}"
+            f"{premium_emoji('gift', '🎁')} <b>МИНИ-ИГРА ОТ ИЛЮШКИ ЗАВЕРШЕНА АДМИНОМ!</b>\n\n"
+            f"{premium_emoji('trophy', '🏆')} Победитель:\n{user_display(winner)}\n\n"
+            f"{premium_emoji('money', '💰')} <b>ПРИЗ:</b> {escape(giveaway_title)}"
         ),
     )
     message_id = None
@@ -1747,7 +1764,7 @@ async def join(callback: types.CallbackQuery):
     mini_finished = True
     await bot.send_message(
         CHANNEL_ID,
-        f"{premium_emoji_id('5890971177484029249', '🎲')} Набрано 6 МИНИ-ИЛЮШЕК! Определяем победителя...",
+        f"{premium_emoji('dice', '🎲')} Набрано 6 МИНИ-ИЛЮШЕК! Определяем победителя...",
     )
 
     dice_msg = await bot.send_dice(CHANNEL_ID)
@@ -1760,10 +1777,10 @@ async def join(callback: types.CallbackQuery):
     await bot.send_message(
         CHANNEL_ID,
         (
-            f"{premium_emoji_id('5240335244762038648', '🎁')} <b>МИНИ-ИГРА ОТ ИЛЮШКИ ЗАВЕРШЕНА!</b>\n\n"
-            f"{premium_emoji_id('5890971177484029249', '🎲')} Выпало число: <b>{dice_value}</b>\n\n"
-            f"{premium_emoji_id('5217822164362739968', '🏆')} Победитель:\n{user_display(winner)}\n\n"
-            f"{premium_emoji_id('5280602079285493593', '💰')} <b>ПРИЗ:</b> {escape(giveaway_title)}"
+            f"{premium_emoji('gift', '🎁')} <b>МИНИ-ИГРА ОТ ИЛЮШКИ ЗАВЕРШЕНА!</b>\n\n"
+            f"{premium_emoji('dice', '🎲')} Выпало число: <b>{dice_value}</b>\n\n"
+            f"{premium_emoji('trophy', '🏆')} Победитель:\n{user_display(winner)}\n\n"
+            f"{premium_emoji('money', '💰')} <b>ПРИЗ:</b> {escape(giveaway_title)}"
         ),
     )
     message_id = None
@@ -1789,16 +1806,10 @@ async def finish_classic(callback: types.CallbackQuery):
         classic_participants,
         min(classic_winners_count, len(classic_participants)),
     )
-    winners_text = "\n".join(user_display(winner) for winner in winners)
-
     await bot.edit_message_caption(
         chat_id=CHANNEL_ID,
         message_id=classic_message_id,
-        caption=(
-            f"☘️ <b>{escape(classic_prize)} ОТ ИЛЮШКИ</b>\n\n"
-            "👉 <b>УЧАСТВОВАТЬ ТУТ</b> @brazers_promo\n\n"
-            f"✨ <b>Победители:</b>\n{winners_text}"
-        ),
+        caption=classic_result_caption(classic_prize, winners),
     )
 
     classic_message_id = None
@@ -1864,7 +1875,7 @@ async def duel_join(callback: types.CallbackQuery):
 
     await bot.send_message(
         CHANNEL_ID,
-        f"{premium_emoji_id('5357593469760059395', '⚔️')} Дуэль собрана. Бросаем кубики...",
+        f"{premium_emoji('swords', '⚔️')} Дуэль собрана. Бросаем кубики...",
     )
     await finish_duel_giveaway()
 
