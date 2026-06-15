@@ -4,6 +4,7 @@ import os
 import random
 from dataclasses import dataclass, field
 from html import escape
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from aiogram import Bot, Dispatcher, F
@@ -16,6 +17,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID_RAW = os.getenv("ADMIN_ID")
 CHANNEL_ID_RAW = os.getenv("CHANNEL_ID")
+USERS_FILE = Path(__file__).with_name("broadcast_users.json")
 
 # Меняй только эту одну строку.
 BRAND_USERNAME, BRAND_AUTHOR = "@brazers_promo", "от Илюшки"
@@ -67,6 +69,36 @@ dp = Dispatcher()
 active_giveaways: Dict[str, Giveaway] = {}
 completed_giveaways: Dict[str, CompletedGiveaway] = {}
 admin_state: Dict[int, dict] = {}
+
+
+def load_known_users() -> set[int]:
+    if not USERS_FILE.exists():
+        return set()
+
+    try:
+        raw_items = USERS_FILE.read_text(encoding="utf-8").splitlines()
+        return {int(item.strip()) for item in raw_items if item.strip()}
+    except Exception:
+        logging.exception("Could not load known users")
+        return set()
+
+
+def save_known_users() -> None:
+    try:
+        payload = "\n".join(str(user_id) for user_id in sorted(known_users))
+        USERS_FILE.write_text(payload, encoding="utf-8")
+    except Exception:
+        logging.exception("Could not save known users")
+
+
+def remember_user(user_id: int) -> None:
+    if user_id in known_users:
+        return
+    known_users.add(user_id)
+    save_known_users()
+
+
+known_users = load_known_users()
 
 
 def is_admin(user_id: int) -> bool:
@@ -209,6 +241,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🎉 Создать мини", callback_data="create:mini")],
             [InlineKeyboardButton(text="🎊 Создать розыгрыш", callback_data="create:classic")],
             [InlineKeyboardButton(text="⚔️ Создать дуэль", callback_data="create:duel")],
+            [InlineKeyboardButton(text="📣 Рассылка", callback_data="broadcast:start")],
             [InlineKeyboardButton(text="🗂 Активные посты", callback_data="manage")],
             [InlineKeyboardButton(text="📊 Статус", callback_data="status")],
             [InlineKeyboardButton(text="🧹 Сбросить ввод", callback_data="reset")],
@@ -439,6 +472,7 @@ def status_text() -> str:
             lines.append(f"• <b>{KIND_TITLES[kind]}</b>: не создан")
     lines.extend(
         [
+            f"• <b>Пользователей для рассылки</b>: {len(known_users)}",
             "",
             "Управление:",
             "• вход в админку через /panel",
@@ -486,6 +520,7 @@ def active_giveaways_text() -> str:
 
 @dp.message(Command("start", "panel"))
 async def start_handler(message: Message) -> None:
+    remember_user(message.from_user.id)
     if not is_admin(message.from_user.id):
         await message.answer("Бот активен. Участвуй через кнопки под постами в канале.")
         return
@@ -499,6 +534,7 @@ async def closed_handler(call: CallbackQuery) -> None:
 
 @dp.callback_query(F.data.in_({"status", "reset", "manage", "back"}))
 async def simple_admin_actions(call: CallbackQuery) -> None:
+    remember_user(call.from_user.id)
     if not is_admin(call.from_user.id):
         await call.answer("Нет доступа", show_alert=True)
         return
@@ -516,8 +552,23 @@ async def simple_admin_actions(call: CallbackQuery) -> None:
     await call.answer()
 
 
+@dp.callback_query(F.data == "broadcast:start")
+async def broadcast_start(call: CallbackQuery) -> None:
+    remember_user(call.from_user.id)
+    if not is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    admin_state[call.from_user.id] = {"kind": "broadcast", "step": "text"}
+    await call.message.answer(
+        "Пришли текст для рассылки.\n\nЕго получат все пользователи, которые уже взаимодействовали с ботом."
+    )
+    await call.answer()
+
+
 @dp.callback_query(F.data.startswith("admin:"))
 async def manage_actions(call: CallbackQuery) -> None:
+    remember_user(call.from_user.id)
     if not is_admin(call.from_user.id):
         await call.answer("Нет доступа", show_alert=True)
         return
@@ -538,6 +589,7 @@ async def manage_actions(call: CallbackQuery) -> None:
 
 @dp.callback_query(F.data.startswith("create:"))
 async def create_handler(call: CallbackQuery) -> None:
+    remember_user(call.from_user.id)
     if not is_admin(call.from_user.id):
         await call.answer("Нет доступа", show_alert=True)
         return
@@ -555,6 +607,7 @@ async def create_handler(call: CallbackQuery) -> None:
 
 @dp.message(F.text)
 async def admin_flow(message: Message) -> None:
+    remember_user(message.from_user.id)
     if not is_admin(message.from_user.id):
         return
 
@@ -565,6 +618,27 @@ async def admin_flow(message: Message) -> None:
     kind = state["kind"]
     step = state["step"]
     text = message.text.strip()
+
+    if kind == "broadcast" and step == "text":
+        if not text:
+            await message.answer("Текст рассылки не должен быть пустым.")
+            return
+
+        sent = 0
+        failed = 0
+        for user_id in sorted(known_users):
+            try:
+                await bot.send_message(user_id, text, disable_web_page_preview=True)
+                sent += 1
+            except Exception:
+                failed += 1
+
+        admin_state.pop(message.from_user.id, None)
+        await message.answer(
+            f"Рассылка завершена.\n\nУспешно: {sent}\nНе доставлено: {failed}",
+            reply_markup=admin_keyboard(),
+        )
+        return
 
     if step == "prize":
         if not text:
@@ -606,6 +680,7 @@ async def create_and_publish(message: Message, kind: str, prize: str, winners_co
 
 @dp.callback_query(F.data.startswith("join:"))
 async def join_handler(call: CallbackQuery) -> None:
+    remember_user(call.from_user.id)
     kind = call.data.split(":", 1)[1]
     giveaway = active_giveaways.get(kind)
 
