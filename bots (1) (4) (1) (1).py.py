@@ -1,0 +1,669 @@
+import asyncio
+import logging
+import os
+import random
+from dataclasses import dataclass, field
+from html import escape
+from typing import Dict, List, Optional
+
+from aiogram import Bot, Dispatcher, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.filters import Command
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+
+
+TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID_RAW = os.getenv("ADMIN_ID")
+CHANNEL_ID_RAW = os.getenv("CHANNEL_ID")
+
+# Меняй только эту одну строку.
+BRAND_USERNAME, BRAND_AUTHOR = "@brazers_promo", "от Илюшки"
+
+MAX_MINI_PLAYERS = 6
+KIND_TITLES = {
+    "mini": "Мини-розыгрыш",
+    "classic": "Розыгрыш",
+    "duel": "Дуэль",
+}
+
+if not TOKEN or not ADMIN_ID_RAW or not CHANNEL_ID_RAW:
+    raise ValueError("Set BOT_TOKEN, ADMIN_ID and CHANNEL_ID environment variables")
+
+try:
+    ADMIN_ID = int(ADMIN_ID_RAW)
+except ValueError as exc:
+    raise ValueError("ADMIN_ID must be a number") from exc
+
+try:
+    CHANNEL_ID: int | str = int(CHANNEL_ID_RAW)
+except ValueError:
+    CHANNEL_ID = CHANNEL_ID_RAW
+
+
+@dataclass
+class Giveaway:
+    kind: str
+    prize: str
+    winners_count: int = 1
+    max_players: Optional[int] = None
+    message_id: Optional[int] = None
+    participants: List[dict] = field(default_factory=list)
+    finished: bool = False
+
+
+@dataclass
+class CompletedGiveaway:
+    kind: str
+    prize: str
+    participants: List[dict] = field(default_factory=list)
+    winners: List[dict] = field(default_factory=list)
+    winners_count: int = 1
+    message_id: Optional[int] = None
+
+
+bot = Bot(TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher()
+active_giveaways: Dict[str, Giveaway] = {}
+completed_giveaways: Dict[str, CompletedGiveaway] = {}
+admin_state: Dict[int, dict] = {}
+
+
+def is_admin(user_id: int) -> bool:
+    return user_id == ADMIN_ID
+
+
+def user_label(user_data: dict) -> str:
+    username = user_data.get("username")
+    if username:
+        return f"@{escape(username)}"
+    return escape(user_data.get("name") or "Без имени")
+
+
+def signature_line() -> str:
+    return f"{escape(BRAND_USERNAME)} • {escape(BRAND_AUTHOR)}"
+
+
+def participants_block(giveaway: Giveaway, empty_text: str) -> List[str]:
+    if not giveaway.participants:
+        return [empty_text]
+    return [f"{index}. {user_label(user)}" for index, user in enumerate(giveaway.participants, start=1)]
+
+
+def mini_text(giveaway: Giveaway) -> str:
+    lines = [
+        "🎉 <b>БЫСТРЫЙ МИНИ-РОЗЫГРЫШ</b>",
+        "",
+        f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
+        f"👥 <b>Участников:</b> {len(giveaway.participants)}/{giveaway.max_players}",
+        "",
+        "✨ <b>Условия простые:</b>",
+        "• нажми кнопку ниже",
+        "• дождись полного набора",
+        "• бот сам выберет победителя",
+        "",
+        f"📣 <b>Юзернейм:</b> {escape(BRAND_USERNAME)}",
+        f"🖋 <b>Подпись:</b> {escape(BRAND_AUTHOR)}",
+        "",
+        "📋 <b>Список участников:</b>",
+        *participants_block(giveaway, "Пока пусто, можешь быть первым."),
+        "",
+        "💫 Успей залететь в список ниже.",
+    ]
+    return "\n".join(lines)
+
+
+def classic_text(giveaway: Giveaway) -> str:
+    lines = [
+        "🎊 <b>НОВЫЙ РОЗЫГРЫШ</b>",
+        "",
+        f"🏆 <b>Приз:</b> {escape(giveaway.prize)}",
+        f"🥇 <b>Количество победителей:</b> {giveaway.winners_count}",
+        "",
+        "📝 <b>Как участвовать:</b>",
+        "• нажми кнопку участия",
+        "• дождись конца розыгрыша",
+        "• проверь итоги прямо в этом посте",
+        "",
+        f"🔗 <b>Юзернейм:</b> {escape(BRAND_USERNAME)}",
+        f"✍️ <b>Подпись:</b> {escape(BRAND_AUTHOR)}",
+        "",
+        "🔥 Чем раньше зайдёшь, тем быстрее окажешься в списке участников.",
+    ]
+    return "\n".join(lines)
+
+
+def duel_text(giveaway: Giveaway) -> str:
+    lines = [
+        "⚔️ <b>ДУЭЛЬ НА ДВОИХ</b>",
+        "",
+        f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
+        "🎲 <b>Механика:</b> как только собираются два игрока, бот сразу бросает кубики.",
+        "",
+        f"📍 <b>Юзернейм:</b> {escape(BRAND_USERNAME)}",
+        f"🖊 <b>Подпись:</b> {escape(BRAND_AUTHOR)}",
+        "",
+        f"👤 <b>Игроки:</b> {len(giveaway.participants)}/2",
+        *participants_block(giveaway, "Пока никто не вошёл."),
+        "",
+        "⚡ Кто зайдёт вторым, тот сразу запустит исход дуэли.",
+    ]
+    return "\n".join(lines)
+
+
+def result_text(title: str, prize: str, winners: List[dict]) -> str:
+    winner_lines = [f"• {user_label(winner)}" for winner in winners] or ["• Участников не было"]
+    lines = [
+        f"✅ <b>{escape(title)}</b>",
+        "",
+        f"🎁 <b>Приз:</b> {escape(prize)}",
+        "",
+        "🏅 <b>Победители:</b>",
+        *winner_lines,
+        "",
+        f"🔖 {signature_line()}",
+    ]
+    return "\n".join(lines)
+
+
+def duel_result_text(giveaway: Giveaway, first: dict, second: dict, first_roll: int, second_roll: int, winner: dict, loser: dict) -> str:
+    lines = [
+        "🔥 <b>ДУЭЛЬ ЗАВЕРШЕНА</b>",
+        "",
+        f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
+        "",
+        f"🎲 {user_label(first)} выбил <b>{first_roll}</b>",
+        f"🎲 {user_label(second)} выбил <b>{second_roll}</b>",
+        "",
+        f"🏆 <b>Победитель:</b> {user_label(winner)}",
+        f"💔 <b>Не повезло:</b> {user_label(loser)}",
+        "",
+        f"🔖 {signature_line()}",
+    ]
+    return "\n".join(lines)
+
+
+def public_keyboard(kind: str, active: bool = True) -> InlineKeyboardMarkup:
+    labels = {
+        "mini": "🎉 Участвовать",
+        "classic": "🎟 Войти в розыгрыш",
+        "duel": "⚔️ Войти в дуэль",
+    }
+    closed_labels = {
+        "mini": "🔒 Набор закрыт",
+        "classic": "🔒 Розыгрыш завершён",
+        "duel": "🔒 Дуэль завершена",
+    }
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=labels[kind], callback_data=f"join:{kind}")]
+            if active
+            else [InlineKeyboardButton(text=closed_labels[kind], callback_data="closed")]
+        ]
+    )
+
+
+def admin_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🎉 Создать мини", callback_data="create:mini")],
+            [InlineKeyboardButton(text="🎊 Создать розыгрыш", callback_data="create:classic")],
+            [InlineKeyboardButton(text="⚔️ Создать дуэль", callback_data="create:duel")],
+            [InlineKeyboardButton(text="🗂 Активные посты", callback_data="manage")],
+            [InlineKeyboardButton(text="📊 Статус", callback_data="status")],
+            [InlineKeyboardButton(text="🧹 Сбросить ввод", callback_data="reset")],
+        ]
+    )
+
+
+def manage_keyboard() -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = []
+    for kind in ("mini", "classic", "duel"):
+        if kind in active_giveaways:
+            rows.append([InlineKeyboardButton(text=f"👥 Участники: {KIND_TITLES[kind]}", callback_data=f"admin:members:{kind}")])
+            rows.append([InlineKeyboardButton(text=f"🏁 Завершить: {KIND_TITLES[kind]}", callback_data=f"admin:finish:{kind}")])
+            rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {KIND_TITLES[kind]}", callback_data=f"admin:delete:{kind}")])
+        if kind in completed_giveaways:
+            rows.append([InlineKeyboardButton(text=f"🎲 Рерол: {KIND_TITLES[kind]}", callback_data=f"admin:reroll:{kind}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def current_text(giveaway: Giveaway) -> str:
+    if giveaway.kind == "mini":
+        return mini_text(giveaway)
+    if giveaway.kind == "classic":
+        return classic_text(giveaway)
+    return duel_text(giveaway)
+
+
+async def publish_giveaway(giveaway: Giveaway) -> None:
+    message = await bot.send_message(
+        chat_id=CHANNEL_ID,
+        text=current_text(giveaway),
+        reply_markup=public_keyboard(giveaway.kind, active=True),
+        disable_web_page_preview=True,
+    )
+    giveaway.message_id = message.message_id
+    active_giveaways[giveaway.kind] = giveaway
+
+
+async def refresh_giveaway(giveaway: Giveaway, active: bool = True) -> None:
+    if giveaway.message_id is None:
+        return
+
+    await bot.edit_message_text(
+        chat_id=CHANNEL_ID,
+        message_id=giveaway.message_id,
+        text=current_text(giveaway),
+        reply_markup=public_keyboard(giveaway.kind, active=active),
+        disable_web_page_preview=True,
+    )
+
+
+async def delete_giveaway(kind: str) -> str:
+    giveaway = active_giveaways.get(kind)
+    if not giveaway:
+        return "Активного поста такого типа нет."
+
+    if giveaway.message_id is not None:
+        try:
+            await bot.delete_message(chat_id=CHANNEL_ID, message_id=giveaway.message_id)
+        except Exception:
+            await bot.edit_message_text(
+                chat_id=CHANNEL_ID,
+                message_id=giveaway.message_id,
+                text=f"🗑 <b>{KIND_TITLES[kind]} удалён администратором</b>\n\n🔖 {signature_line()}",
+                reply_markup=public_keyboard(kind, active=False),
+                disable_web_page_preview=True,
+            )
+
+    active_giveaways.pop(kind, None)
+    return f"{KIND_TITLES[kind]} удалён."
+
+
+async def finish_mini(giveaway: Giveaway) -> str:
+    giveaway.finished = True
+    winner = random.choice(giveaway.participants)
+    await bot.edit_message_text(
+        chat_id=CHANNEL_ID,
+        message_id=giveaway.message_id,
+        text=result_text("Мини-розыгрыш завершён", giveaway.prize, [winner]),
+        reply_markup=public_keyboard("mini", active=False),
+        disable_web_page_preview=True,
+    )
+    completed_giveaways["mini"] = CompletedGiveaway(
+        kind="mini",
+        prize=giveaway.prize,
+        participants=list(giveaway.participants),
+        winners=[winner],
+        winners_count=1,
+        message_id=giveaway.message_id,
+    )
+    active_giveaways.pop("mini", None)
+    return f"Победитель мини: {user_label(winner)}"
+
+
+async def finish_classic(giveaway: Giveaway) -> str:
+    giveaway.finished = True
+    winners_count = min(giveaway.winners_count, len(giveaway.participants))
+    winners = random.sample(giveaway.participants, winners_count)
+    await bot.edit_message_text(
+        chat_id=CHANNEL_ID,
+        message_id=giveaway.message_id,
+        text=result_text("Розыгрыш завершён", giveaway.prize, winners),
+        reply_markup=public_keyboard("classic", active=False),
+        disable_web_page_preview=True,
+    )
+    completed_giveaways["classic"] = CompletedGiveaway(
+        kind="classic",
+        prize=giveaway.prize,
+        participants=list(giveaway.participants),
+        winners=list(winners),
+        winners_count=winners_count,
+        message_id=giveaway.message_id,
+    )
+    active_giveaways.pop("classic", None)
+    return "Розыгрыш завершён."
+
+
+async def finish_duel(giveaway: Giveaway) -> str:
+    first, second = giveaway.participants
+    first_roll = random.randint(1, 6)
+    second_roll = random.randint(1, 6)
+
+    while first_roll == second_roll:
+        first_roll = random.randint(1, 6)
+        second_roll = random.randint(1, 6)
+
+    winner, loser = (first, second) if first_roll > second_roll else (second, first)
+    await bot.edit_message_text(
+        chat_id=CHANNEL_ID,
+        message_id=giveaway.message_id,
+        text=duel_result_text(giveaway, first, second, first_roll, second_roll, winner, loser),
+        reply_markup=public_keyboard("duel", active=False),
+        disable_web_page_preview=True,
+    )
+    completed_giveaways["duel"] = CompletedGiveaway(
+        kind="duel",
+        prize=giveaway.prize,
+        participants=list(giveaway.participants),
+        winners=[winner],
+        winners_count=1,
+        message_id=giveaway.message_id,
+    )
+    active_giveaways.pop("duel", None)
+    return f"Победитель дуэли: {user_label(winner)}"
+
+
+def participants_text(kind: str) -> str:
+    giveaway = active_giveaways.get(kind)
+    if not giveaway:
+        return "Активного розыгрыша такого типа сейчас нет."
+
+    lines = [f"👥 <b>Участники: {KIND_TITLES[kind]}</b>", ""]
+    if giveaway.participants:
+        lines.extend(f"{index}. {user_label(user)}" for index, user in enumerate(giveaway.participants, start=1))
+    else:
+        lines.append("Пока участников нет.")
+    return "\n".join(lines)
+
+
+async def reroll_giveaway(kind: str) -> str:
+    completed = completed_giveaways.get(kind)
+    if not completed:
+        return "Для этого типа ещё нет завершённого розыгрыша для рерола."
+
+    if not completed.participants:
+        return "Нет участников для рерола."
+
+    winners_count = min(completed.winners_count, len(completed.participants))
+    new_winners = random.sample(completed.participants, winners_count)
+    completed.winners = list(new_winners)
+
+    if completed.message_id is not None:
+        if kind == "duel":
+            winner = new_winners[0]
+            loser = next((user for user in completed.participants if user["id"] != winner["id"]), completed.participants[0])
+            text = "\n".join(
+                [
+                    "🎲 <b>РЕРОЛ ДУЭЛИ</b>",
+                    "",
+                    f"🎁 <b>Приз:</b> {escape(completed.prize)}",
+                    f"🏆 <b>Новый победитель:</b> {user_label(winner)}",
+                    f"💔 <b>Не повезло:</b> {user_label(loser)}",
+                    "",
+                    f"🔖 {signature_line()}",
+                ]
+            )
+        else:
+            title = "Рерол мини-розыгрыша" if kind == "mini" else "Рерол розыгрыша"
+            text = result_text(title, completed.prize, new_winners)
+
+        await bot.edit_message_text(
+            chat_id=CHANNEL_ID,
+            message_id=completed.message_id,
+            text=text,
+            reply_markup=public_keyboard(kind, active=False),
+            disable_web_page_preview=True,
+        )
+
+    winners_line = ", ".join(user_label(user) for user in new_winners)
+    return f"Рерол выполнен. Новый результат: {winners_line}"
+
+
+async def finish_giveaway_by_kind(kind: str) -> str:
+    giveaway = active_giveaways.get(kind)
+    if not giveaway:
+        return "Активного поста такого типа нет."
+
+    if not giveaway.participants:
+        return "Нельзя завершить без участников."
+
+    if kind == "mini":
+        return await finish_mini(giveaway)
+    if kind == "classic":
+        return await finish_classic(giveaway)
+    if len(giveaway.participants) < 2:
+        return "Для дуэли нужно 2 игрока."
+    return await finish_duel(giveaway)
+
+
+def status_text() -> str:
+    lines = ["📊 <b>Текущий статус бота</b>", ""]
+    for kind in ("mini", "classic", "duel"):
+        giveaway = active_giveaways.get(kind)
+        if giveaway:
+            lines.append(f"• <b>{KIND_TITLES[kind]}</b>: активен, участников {len(giveaway.participants)}")
+        else:
+            lines.append(f"• <b>{KIND_TITLES[kind]}</b>: не создан")
+    lines.extend(
+        [
+            "",
+            "Управление:",
+            "• вход в админку через /panel",
+            "• всё остальное делается кнопками",
+            "• для активных розыгрышей есть участники, завершение и удаление",
+            "• для завершённых есть рерол",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def active_giveaways_text() -> str:
+    lines = ["🗂 <b>Активные розыгрыши</b>", ""]
+
+    found = False
+    for kind in ("mini", "classic", "duel"):
+        giveaway = active_giveaways.get(kind)
+        if not giveaway:
+            continue
+
+        found = True
+        lines.extend(
+            [
+                f"🎯 <b>{KIND_TITLES[kind]}</b>",
+                f"🎁 Приз: {escape(giveaway.prize)}",
+                f"👥 Участников: {len(giveaway.participants)}",
+                "📌 Доступно в админке: участники, завершение, удаление",
+                "",
+            ]
+        )
+
+    if not found:
+        lines.append("Сейчас активных розыгрышей нет.")
+
+    if completed_giveaways:
+        lines.extend(
+            [
+                "🎲 <b>Для завершённых доступен рерол:</b>",
+                ", ".join(KIND_TITLES[kind] for kind in completed_giveaways),
+            ]
+        )
+
+    return "\n".join(lines)
+
+
+@dp.message(Command("start", "panel"))
+async def start_handler(message: Message) -> None:
+    if not is_admin(message.from_user.id):
+        await message.answer("Бот активен. Участвуй через кнопки под постами в канале.")
+        return
+    await message.answer("Панель управления открыта.", reply_markup=admin_keyboard())
+
+
+@dp.callback_query(F.data == "closed")
+async def closed_handler(call: CallbackQuery) -> None:
+    await call.answer("Набор уже закрыт", show_alert=True)
+
+
+@dp.callback_query(F.data.in_({"status", "reset", "manage", "back"}))
+async def simple_admin_actions(call: CallbackQuery) -> None:
+    if not is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    if call.data == "reset":
+        admin_state.pop(call.from_user.id, None)
+        await call.message.answer("Черновик сброшен.", reply_markup=admin_keyboard())
+    elif call.data == "status":
+        await call.message.answer(status_text(), reply_markup=admin_keyboard())
+    elif call.data == "manage":
+        await call.message.answer(active_giveaways_text(), reply_markup=manage_keyboard())
+    else:
+        await call.message.answer("Возвращаю панель.", reply_markup=admin_keyboard())
+
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("admin:"))
+async def manage_actions(call: CallbackQuery) -> None:
+    if not is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    _, action, kind = call.data.split(":")
+    if action == "members":
+        text = participants_text(kind)
+    elif action == "finish":
+        text = await finish_giveaway_by_kind(kind)
+    elif action == "reroll":
+        text = await reroll_giveaway(kind)
+    else:
+        text = await delete_giveaway(kind)
+
+    await call.message.answer(text, reply_markup=admin_keyboard())
+    await call.answer("Готово")
+
+
+@dp.callback_query(F.data.startswith("create:"))
+async def create_handler(call: CallbackQuery) -> None:
+    if not is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    kind = call.data.split(":", 1)[1]
+    admin_state[call.from_user.id] = {"kind": kind, "step": "prize"}
+    prompts = {
+        "mini": "Пришли приз для мини-розыгрыша.",
+        "classic": "Пришли приз для обычного розыгрыша.",
+        "duel": "Пришли приз для дуэли.",
+    }
+    await call.message.answer(prompts[kind])
+    await call.answer()
+
+
+@dp.message(F.text)
+async def admin_flow(message: Message) -> None:
+    if not is_admin(message.from_user.id):
+        return
+
+    state = admin_state.get(message.from_user.id)
+    if not state or not message.text:
+        return
+
+    kind = state["kind"]
+    step = state["step"]
+    text = message.text.strip()
+
+    if step == "prize":
+        if not text:
+            await message.answer("Приз не должен быть пустым.")
+            return
+
+        state["prize"] = text
+        if kind == "classic":
+            state["step"] = "winners"
+            await message.answer("Сколько победителей нужно выбрать?")
+            return
+
+        await create_and_publish(message, kind, text, 1)
+        return
+
+    if step == "winners":
+        if not text.isdigit() or int(text) < 1:
+            await message.answer("Пришли число от 1 и выше.")
+            return
+
+        await create_and_publish(message, kind, state["prize"], int(text))
+
+
+async def create_and_publish(message: Message, kind: str, prize: str, winners_count: int) -> None:
+    if kind in active_giveaways:
+        await message.answer(f"Сначала заверши текущий пост типа: {KIND_TITLES[kind]}.")
+        return
+
+    giveaway = Giveaway(
+        kind=kind,
+        prize=prize,
+        winners_count=winners_count,
+        max_players=MAX_MINI_PLAYERS if kind == "mini" else 2 if kind == "duel" else None,
+    )
+    await publish_giveaway(giveaway)
+    admin_state.pop(message.from_user.id, None)
+    await message.answer("Пост опубликован в канал.", reply_markup=admin_keyboard())
+
+
+@dp.callback_query(F.data.startswith("join:"))
+async def join_handler(call: CallbackQuery) -> None:
+    kind = call.data.split(":", 1)[1]
+    giveaway = active_giveaways.get(kind)
+
+    if not giveaway or giveaway.finished:
+        await call.answer("Этот набор уже закрыт", show_alert=True)
+        return
+
+    if any(user["id"] == call.from_user.id for user in giveaway.participants):
+        await call.answer("Ты уже участвуешь")
+        return
+
+    if giveaway.max_players and len(giveaway.participants) >= giveaway.max_players:
+        await call.answer("Свободных мест уже нет", show_alert=True)
+        return
+
+    giveaway.participants.append(
+        {
+            "id": call.from_user.id,
+            "username": call.from_user.username,
+            "name": call.from_user.first_name,
+        }
+    )
+
+    if kind == "duel" and len(giveaway.participants) == 2:
+        result = await finish_duel(giveaway)
+        await bot.send_message(ADMIN_ID, result)
+        await call.answer("Второй игрок зашёл, дуэль уже сыграна.")
+        return
+
+    await refresh_giveaway(giveaway, active=True)
+
+    if kind == "mini" and len(giveaway.participants) == giveaway.max_players:
+        result = await finish_mini(giveaway)
+        await bot.send_message(ADMIN_ID, result)
+        await call.answer("Ты успел в мини, победитель уже определён.")
+        return
+
+    await call.answer(f"Готово. Сейчас участников: {len(giveaway.participants)}")
+
+
+async def on_startup() -> None:
+    logging.info("Bot started")
+    await bot.send_message(
+        ADMIN_ID,
+        "Бот запущен.\n\n"
+        "Что можно делать:\n"
+        "• открыть /panel\n"
+        "• создать мини, розыгрыш или дуэль\n"
+        "• смотреть участников, завершать, удалять и делать рерол кнопками\n"
+        "• менять бренд одной строкой: BRAND_USERNAME, BRAND_AUTHOR",
+    )
+
+
+async def main() -> None:
+    await on_startup()
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(main())
