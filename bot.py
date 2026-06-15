@@ -28,6 +28,7 @@ KIND_TITLES = {
     "classic": "Розыгрыш",
     "duel": "Дуэль",
     "darts": "Дартс-дуэль",
+    "bowling": "Боулинг-дуэль",
 }
 
 if not TOKEN or not ADMIN_ID_RAW or not CHANNEL_ID_RAW:
@@ -156,6 +157,10 @@ def classic_text(giveaway: Giveaway) -> str:
         f"🥇 <b>Количество победителей:</b> {giveaway.winners_count}",
         "",
         *promo_lines(),
+        "",
+        f"👥 <b>Участников:</b> {len(giveaway.participants)}",
+        "📋 <b>Список участников:</b>",
+        *participants_block(giveaway, "Пока пусто, можешь быть первым."),
     ]
     return "\n".join(lines)
 
@@ -176,6 +181,19 @@ def duel_text(giveaway: Giveaway) -> str:
 def darts_text(giveaway: Giveaway) -> str:
     lines = [
         f"🎯 <b>{branded_title('ДАРТС-БИТВА НА ДВОИХ')}</b>",
+        "",
+        f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
+        *promo_lines(),
+        "",
+        f"👤 <b>Игроки:</b> {len(giveaway.participants)}/2",
+        *participants_block(giveaway, "Пока никто не вошёл."),
+    ]
+    return "\n".join(lines)
+
+
+def bowling_text(giveaway: Giveaway) -> str:
+    lines = [
+        f"🎳 <b>{branded_title('БОУЛИНГ-БИТВА НА ДВОИХ')}</b>",
         "",
         f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
         *promo_lines(),
@@ -235,18 +253,37 @@ def darts_result_text(giveaway: Giveaway, first: dict, second: dict, first_score
     return "\n".join(lines)
 
 
+def bowling_result_text(giveaway: Giveaway, first: dict, second: dict, first_score: int, second_score: int, winner: dict, loser: dict, title: str = "БОУЛИНГ ЗАВЕРШЁН") -> str:
+    lines = [
+        f"🎳 <b>{title}</b>",
+        "",
+        f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
+        "",
+        f"🎳 {user_label(first)} выбил <b>{first_score}</b>",
+        f"🎳 {user_label(second)} выбил <b>{second_score}</b>",
+        "",
+        f"🏆 <b>Победитель:</b> {user_label(winner)}",
+        f"💨 <b>Не хватило чуть-чуть:</b> {user_label(loser)}",
+        "",
+        f"🔖 {signature_line()}",
+    ]
+    return "\n".join(lines)
+
+
 def public_keyboard(kind: str, active: bool = True) -> InlineKeyboardMarkup:
     labels = {
         "mini": "🎉 Участвовать",
         "classic": "🎟 Войти в розыгрыш",
         "duel": "⚔️ Войти в дуэль",
         "darts": "🎯 Войти в дартс",
+        "bowling": "🎳 Войти в боулинг",
     }
     closed_labels = {
         "mini": "🔒 Набор закрыт",
         "classic": "🔒 Розыгрыш завершён",
         "duel": "🔒 Дуэль завершена",
         "darts": "🔒 Дартс завершён",
+        "bowling": "🔒 Боулинг завершён",
     }
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -272,6 +309,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🎊 Создать розыгрыш", callback_data="create:classic")],
             [InlineKeyboardButton(text="⚔️ Создать дуэль", callback_data="create:duel")],
             [InlineKeyboardButton(text="🎯 Создать дартс", callback_data="create:darts")],
+            [InlineKeyboardButton(text="🎳 Создать боулинг", callback_data="create:bowling")],
             [InlineKeyboardButton(text="📣 Рассылка", callback_data="broadcast:start")],
             [InlineKeyboardButton(text="🗂 Активные посты", callback_data="manage")],
             [InlineKeyboardButton(text="📊 Статус", callback_data="status")],
@@ -282,7 +320,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
 
 def manage_keyboard() -> InlineKeyboardMarkup:
     rows: List[List[InlineKeyboardButton]] = []
-    for kind in ("mini", "classic", "duel", "darts"):
+    for kind in ("mini", "classic", "duel", "darts", "bowling"):
         if kind in active_giveaways:
             rows.append([InlineKeyboardButton(text=f"👥 Участники: {KIND_TITLES[kind]}", callback_data=f"admin:members:{kind}")])
             rows.append([InlineKeyboardButton(text=f"🏁 Завершить: {KIND_TITLES[kind]}", callback_data=f"admin:finish:{kind}")])
@@ -300,6 +338,8 @@ def current_text(giveaway: Giveaway) -> str:
         return classic_text(giveaway)
     if giveaway.kind == "darts":
         return darts_text(giveaway)
+    if giveaway.kind == "bowling":
+        return bowling_text(giveaway)
     return duel_text(giveaway)
 
 
@@ -348,13 +388,49 @@ async def delete_giveaway(kind: str) -> str:
     return f"{KIND_TITLES[kind]} удалён."
 
 
+async def roll_contest(participants: List[dict], emoji: str, start_text: str) -> tuple[dict, int]:
+    await bot.send_message(CHANNEL_ID, start_text)
+    active_players = list(participants)
+
+    while True:
+        round_scores: List[tuple[dict, int]] = []
+        for player in active_players:
+            dice_message = await bot.send_dice(chat_id=CHANNEL_ID, emoji=emoji)
+            round_scores.append((player, dice_message.dice.value))
+
+        best_score = max(score for _, score in round_scores)
+        leaders = [player for player, score in round_scores if score == best_score]
+
+        if len(leaders) == 1:
+            return leaders[0], best_score
+
+        names = ", ".join(user_label(player) for player in leaders)
+        await bot.send_message(CHANNEL_ID, f"{emoji} Ничья между {names}. Перекидываем ещё раз...")
+        active_players = leaders
+
+
 async def finish_mini(giveaway: Giveaway) -> str:
     giveaway.finished = True
-    winner = random.choice(giveaway.participants)
+    winner, winner_score = await roll_contest(
+        giveaway.participants,
+        "🎲",
+        "🎲 Определяем победителя мини-розыгрыша реальными кубиками...",
+    )
     await bot.edit_message_text(
         chat_id=CHANNEL_ID,
         message_id=giveaway.message_id,
-        text=result_text("Мини-розыгрыш завершён", giveaway.prize, [winner]),
+        text="\n".join(
+            [
+                "✅ <b>Мини-розыгрыш завершён</b>",
+                "",
+                f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
+                f"🎲 <b>Победный бросок:</b> {winner_score}",
+                "",
+                f"🏆 <b>Победитель:</b> {user_label(winner)}",
+                "",
+                f"🔖 {signature_line()}",
+            ]
+        ),
         reply_markup=public_keyboard("mini", active=False),
         disable_web_page_preview=True,
     )
@@ -395,12 +471,18 @@ async def finish_classic(giveaway: Giveaway) -> str:
 
 async def finish_duel(giveaway: Giveaway) -> str:
     first, second = giveaway.participants
-    first_roll = random.randint(1, 6)
-    second_roll = random.randint(1, 6)
+    await bot.send_message(CHANNEL_ID, "🎲 Дуэль начинается, кидаем реальные кубики...")
+    first_roll_message = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎲")
+    second_roll_message = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎲")
+    first_roll = first_roll_message.dice.value
+    second_roll = second_roll_message.dice.value
 
     while first_roll == second_roll:
-        first_roll = random.randint(1, 6)
-        second_roll = random.randint(1, 6)
+        await bot.send_message(CHANNEL_ID, "🎲 Ничья на кубиках, кидаем ещё раз...")
+        first_roll_message = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎲")
+        second_roll_message = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎲")
+        first_roll = first_roll_message.dice.value
+        second_roll = second_roll_message.dice.value
 
     winner, loser = (first, second) if first_roll > second_roll else (second, first)
     await bot.edit_message_text(
@@ -458,6 +540,42 @@ async def finish_darts(giveaway: Giveaway, reroll: bool = False) -> str:
     return f"Победитель дартса: {user_label(winner)}"
 
 
+async def finish_bowling(giveaway: Giveaway, reroll: bool = False) -> str:
+    first, second = giveaway.participants
+    first_ball = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎳")
+    second_ball = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎳")
+
+    first_score = first_ball.dice.value
+    second_score = second_ball.dice.value
+    while first_score == second_score:
+        await bot.send_message(CHANNEL_ID, "🎳 Ничья в боулинге, кидаем ещё раз...")
+        first_ball = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎳")
+        second_ball = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎳")
+        first_score = first_ball.dice.value
+        second_score = second_ball.dice.value
+        await asyncio.sleep(0.5)
+
+    winner, loser = (first, second) if first_score > second_score else (second, first)
+    title = "РЕРОЛ БОУЛИНГА" if reroll else "БОУЛИНГ ЗАВЕРШЁН"
+    await bot.edit_message_text(
+        chat_id=CHANNEL_ID,
+        message_id=giveaway.message_id,
+        text=bowling_result_text(giveaway, first, second, first_score, second_score, winner, loser, title=title),
+        reply_markup=public_keyboard("bowling", active=False),
+        disable_web_page_preview=True,
+    )
+    completed_giveaways["bowling"] = CompletedGiveaway(
+        kind="bowling",
+        prize=giveaway.prize,
+        participants=list(giveaway.participants),
+        winners=[winner],
+        winners_count=1,
+        message_id=giveaway.message_id,
+    )
+    active_giveaways.pop("bowling", None)
+    return f"Победитель боулинга: {user_label(winner)}"
+
+
 def participants_text(kind: str) -> str:
     giveaway = active_giveaways.get(kind)
     if not giveaway:
@@ -485,24 +603,19 @@ async def reroll_giveaway(kind: str) -> str:
 
     if completed.message_id is not None:
         if kind == "duel":
-            winner = new_winners[0]
-            loser = next((user for user in completed.participants if user["id"] != winner["id"]), completed.participants[0])
-            text = "\n".join(
-                [
-                    "🎲 <b>РЕРОЛ ДУЭЛИ</b>",
-                    "",
-                    f"🎁 <b>Приз:</b> {escape(completed.prize)}",
-                    f"🏆 <b>Новый победитель:</b> {user_label(winner)}",
-                    f"💔 <b>Не повезло:</b> {user_label(loser)}",
-                    "",
-                    f"🔖 {signature_line()}",
-                ]
-            )
+            giveaway = Giveaway(kind="duel", prize=completed.prize, max_players=2, message_id=completed.message_id, participants=list(completed.participants))
+            return await finish_duel(giveaway)
         elif kind == "darts":
             giveaway = Giveaway(kind="darts", prize=completed.prize, max_players=2, message_id=completed.message_id, participants=list(completed.participants))
             return await finish_darts(giveaway, reroll=True)
+        elif kind == "bowling":
+            giveaway = Giveaway(kind="bowling", prize=completed.prize, max_players=2, message_id=completed.message_id, participants=list(completed.participants))
+            return await finish_bowling(giveaway, reroll=True)
+        elif kind == "mini":
+            giveaway = Giveaway(kind="mini", prize=completed.prize, max_players=len(completed.participants), message_id=completed.message_id, participants=list(completed.participants))
+            return await finish_mini(giveaway)
         else:
-            title = "Рерол мини-розыгрыша" if kind == "mini" else "Рерол розыгрыша"
+            title = "Рерол розыгрыша"
             text = result_text(title, completed.prize, new_winners)
 
         await bot.edit_message_text(
@@ -533,6 +646,10 @@ async def finish_giveaway_by_kind(kind: str) -> str:
         if len(giveaway.participants) < 2:
             return "Для дартса нужно 2 игрока."
         return await finish_darts(giveaway)
+    if kind == "bowling":
+        if len(giveaway.participants) < 2:
+            return "Для боулинга нужно 2 игрока."
+        return await finish_bowling(giveaway)
     if len(giveaway.participants) < 2:
         return "Для дуэли нужно 2 игрока."
     return await finish_duel(giveaway)
@@ -540,7 +657,7 @@ async def finish_giveaway_by_kind(kind: str) -> str:
 
 def status_text() -> str:
     lines = ["📊 <b>Текущий статус бота</b>", ""]
-    for kind in ("mini", "classic", "duel", "darts"):
+    for kind in ("mini", "classic", "duel", "darts", "bowling"):
         giveaway = active_giveaways.get(kind)
         if giveaway:
             lines.append(f"• <b>{KIND_TITLES[kind]}</b>: активен, участников {len(giveaway.participants)}")
@@ -564,7 +681,7 @@ def active_giveaways_text() -> str:
     lines = ["🗂 <b>Активные розыгрыши</b>", ""]
 
     found = False
-    for kind in ("mini", "classic", "duel", "darts"):
+    for kind in ("mini", "classic", "duel", "darts", "bowling"):
         giveaway = active_giveaways.get(kind)
         if not giveaway:
             continue
@@ -687,6 +804,7 @@ async def create_handler(call: CallbackQuery) -> None:
         "classic": "Пришли приз для обычного розыгрыша.",
         "duel": "Пришли приз для дуэли.",
         "darts": "Пришли приз для дартс-дуэли.",
+        "bowling": "Пришли приз для боулинг-дуэли.",
     }
     await call.message.answer(prompts[kind])
     await call.answer()
@@ -758,7 +876,7 @@ async def create_and_publish(message: Message, kind: str, prize: str, winners_co
         kind=kind,
         prize=prize,
         winners_count=winners_count,
-        max_players=MAX_MINI_PLAYERS if kind == "mini" else 2 if kind in {"duel", "darts"} else None,
+        max_players=MAX_MINI_PLAYERS if kind == "mini" else 2 if kind in {"duel", "darts", "bowling"} else None,
     )
     await publish_giveaway(giveaway)
     admin_state.pop(message.from_user.id, None)
@@ -803,6 +921,12 @@ async def join_handler(call: CallbackQuery) -> None:
         await call.answer("Второй игрок зашёл, дартс уже сыгран.")
         return
 
+    if kind == "bowling" and len(giveaway.participants) == 2:
+        result = await finish_bowling(giveaway)
+        await bot.send_message(ADMIN_ID, result)
+        await call.answer("Второй игрок зашёл, боулинг уже сыгран.")
+        return
+
     await refresh_giveaway(giveaway, active=True)
 
     if kind == "mini" and len(giveaway.participants) == giveaway.max_players:
@@ -821,7 +945,7 @@ async def on_startup() -> None:
         "Бот запущен.\n\n"
         "Что можно делать:\n"
         "• открыть /start и зайти в админку кнопкой\n"
-        "• создать мини, розыгрыш, дуэль или дартс\n"
+        "• создать мини, розыгрыш, дуэль, дартс или боулинг\n"
         "• смотреть участников, завершать, удалять и делать рерол кнопками\n"
         "• менять бренд одной строкой: BRAND_USERNAME, BRAND_AUTHOR",
     )
