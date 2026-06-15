@@ -27,6 +27,7 @@ KIND_TITLES = {
     "mini": "Мини-розыгрыш",
     "classic": "Розыгрыш",
     "duel": "Дуэль",
+    "darts": "Дартс-дуэль",
 }
 
 if not TOKEN or not ADMIN_ID_RAW or not CHANNEL_ID_RAW:
@@ -116,6 +117,16 @@ def signature_line() -> str:
     return f"{escape(BRAND_USERNAME)} • {escape(BRAND_AUTHOR)}"
 
 
+def branded_title(title: str) -> str:
+    return f"{title} {escape(BRAND_AUTHOR)}"
+
+
+def promo_lines() -> List[str]:
+    return [
+        f"👉 <b>Участвовать тут</b> {escape(BRAND_USERNAME)}",
+    ]
+
+
 def participants_block(giveaway: Giveaway, empty_text: str) -> List[str]:
     if not giveaway.participants:
         return [empty_text]
@@ -124,61 +135,53 @@ def participants_block(giveaway: Giveaway, empty_text: str) -> List[str]:
 
 def mini_text(giveaway: Giveaway) -> str:
     lines = [
-        "🎉 <b>БЫСТРЫЙ МИНИ-РОЗЫГРЫШ</b>",
+        f"🎉 <b>{branded_title('БЫСТРЫЙ МИНИ-РОЗЫГРЫШ')}</b>",
         "",
         f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
         f"👥 <b>Участников:</b> {len(giveaway.participants)}/{giveaway.max_players}",
         "",
-        "✨ <b>Условия простые:</b>",
-        "• нажми кнопку ниже",
-        "• дождись полного набора",
-        "• бот сам выберет победителя",
-        "",
-        f"📣 <b>Юзернейм:</b> {escape(BRAND_USERNAME)}",
-        f"🖋 <b>Подпись:</b> {escape(BRAND_AUTHOR)}",
+        *promo_lines(),
         "",
         "📋 <b>Список участников:</b>",
         *participants_block(giveaway, "Пока пусто, можешь быть первым."),
-        "",
-        "💫 Успей залететь в список ниже.",
     ]
     return "\n".join(lines)
 
 
 def classic_text(giveaway: Giveaway) -> str:
     lines = [
-        "🎊 <b>НОВЫЙ РОЗЫГРЫШ</b>",
+        f"🎊 <b>{branded_title('НОВЫЙ РОЗЫГРЫШ')}</b>",
         "",
         f"🏆 <b>Приз:</b> {escape(giveaway.prize)}",
         f"🥇 <b>Количество победителей:</b> {giveaway.winners_count}",
         "",
-        "📝 <b>Как участвовать:</b>",
-        "• нажми кнопку участия",
-        "• дождись конца розыгрыша",
-        "• проверь итоги прямо в этом посте",
-        "",
-        f"🔗 <b>Юзернейм:</b> {escape(BRAND_USERNAME)}",
-        f"✍️ <b>Подпись:</b> {escape(BRAND_AUTHOR)}",
-        "",
-        "🔥 Чем раньше зайдёшь, тем быстрее окажешься в списке участников.",
+        *promo_lines(),
     ]
     return "\n".join(lines)
 
 
 def duel_text(giveaway: Giveaway) -> str:
     lines = [
-        "⚔️ <b>ДУЭЛЬ НА ДВОИХ</b>",
+        f"⚔️ <b>{branded_title('ДУЭЛЬ НА ДВОИХ')}</b>",
         "",
         f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
-        "🎲 <b>Механика:</b> как только собираются два игрока, бот сразу бросает кубики.",
-        "",
-        f"📍 <b>Юзернейм:</b> {escape(BRAND_USERNAME)}",
-        f"🖊 <b>Подпись:</b> {escape(BRAND_AUTHOR)}",
+        *promo_lines(),
         "",
         f"👤 <b>Игроки:</b> {len(giveaway.participants)}/2",
         *participants_block(giveaway, "Пока никто не вошёл."),
+    ]
+    return "\n".join(lines)
+
+
+def darts_text(giveaway: Giveaway) -> str:
+    lines = [
+        f"🎯 <b>{branded_title('ДАРТС-БИТВА НА ДВОИХ')}</b>",
         "",
-        "⚡ Кто зайдёт вторым, тот сразу запустит исход дуэли.",
+        f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
+        *promo_lines(),
+        "",
+        f"👤 <b>Игроки:</b> {len(giveaway.participants)}/2",
+        *participants_block(giveaway, "Пока никто не вошёл."),
     ]
     return "\n".join(lines)
 
@@ -215,16 +218,35 @@ def duel_result_text(giveaway: Giveaway, first: dict, second: dict, first_roll: 
     return "\n".join(lines)
 
 
+def darts_result_text(giveaway: Giveaway, first: dict, second: dict, first_score: int, second_score: int, winner: dict, loser: dict, title: str = "ДАРТС ЗАВЕРШЁН") -> str:
+    lines = [
+        f"🎯 <b>{title}</b>",
+        "",
+        f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
+        "",
+        f"🏹 {user_label(first)} попал на <b>{first_score}</b>",
+        f"🏹 {user_label(second)} попал на <b>{second_score}</b>",
+        "",
+        f"🏆 <b>Победитель:</b> {user_label(winner)}",
+        f"💨 <b>Чуть не хватило:</b> {user_label(loser)}",
+        "",
+        f"🔖 {signature_line()}",
+    ]
+    return "\n".join(lines)
+
+
 def public_keyboard(kind: str, active: bool = True) -> InlineKeyboardMarkup:
     labels = {
         "mini": "🎉 Участвовать",
         "classic": "🎟 Войти в розыгрыш",
         "duel": "⚔️ Войти в дуэль",
+        "darts": "🎯 Войти в дартс",
     }
     closed_labels = {
         "mini": "🔒 Набор закрыт",
         "classic": "🔒 Розыгрыш завершён",
         "duel": "🔒 Дуэль завершена",
+        "darts": "🔒 Дартс завершён",
     }
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -235,12 +257,21 @@ def public_keyboard(kind: str, active: bool = True) -> InlineKeyboardMarkup:
     )
 
 
+def start_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    rows = []
+    if is_admin(user_id):
+        rows.append([InlineKeyboardButton(text="🛠 Открыть админку", callback_data="open_admin")])
+    rows.append([InlineKeyboardButton(text="📢 Открыть канал", url=f"https://t.me/{BRAND_USERNAME.lstrip('@')}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def admin_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🎉 Создать мини", callback_data="create:mini")],
             [InlineKeyboardButton(text="🎊 Создать розыгрыш", callback_data="create:classic")],
             [InlineKeyboardButton(text="⚔️ Создать дуэль", callback_data="create:duel")],
+            [InlineKeyboardButton(text="🎯 Создать дартс", callback_data="create:darts")],
             [InlineKeyboardButton(text="📣 Рассылка", callback_data="broadcast:start")],
             [InlineKeyboardButton(text="🗂 Активные посты", callback_data="manage")],
             [InlineKeyboardButton(text="📊 Статус", callback_data="status")],
@@ -251,7 +282,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
 
 def manage_keyboard() -> InlineKeyboardMarkup:
     rows: List[List[InlineKeyboardButton]] = []
-    for kind in ("mini", "classic", "duel"):
+    for kind in ("mini", "classic", "duel", "darts"):
         if kind in active_giveaways:
             rows.append([InlineKeyboardButton(text=f"👥 Участники: {KIND_TITLES[kind]}", callback_data=f"admin:members:{kind}")])
             rows.append([InlineKeyboardButton(text=f"🏁 Завершить: {KIND_TITLES[kind]}", callback_data=f"admin:finish:{kind}")])
@@ -267,6 +298,8 @@ def current_text(giveaway: Giveaway) -> str:
         return mini_text(giveaway)
     if giveaway.kind == "classic":
         return classic_text(giveaway)
+    if giveaway.kind == "darts":
+        return darts_text(giveaway)
     return duel_text(giveaway)
 
 
@@ -389,6 +422,42 @@ async def finish_duel(giveaway: Giveaway) -> str:
     return f"Победитель дуэли: {user_label(winner)}"
 
 
+async def finish_darts(giveaway: Giveaway, reroll: bool = False) -> str:
+    first, second = giveaway.participants
+    first_dart = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎯")
+    second_dart = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎯")
+
+    first_score = first_dart.dice.value
+    second_score = second_dart.dice.value
+    while first_score == second_score:
+        tie_break = await bot.send_message(CHANNEL_ID, "🎯 Ничья в дартсе, кидаем ещё раз...")
+        first_dart = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎯")
+        second_dart = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎯")
+        first_score = first_dart.dice.value
+        second_score = second_dart.dice.value
+        await asyncio.sleep(0.5)
+
+    winner, loser = (first, second) if first_score > second_score else (second, first)
+    title = "РЕРОЛ ДАРТСА" if reroll else "ДАРТС ЗАВЕРШЁН"
+    await bot.edit_message_text(
+        chat_id=CHANNEL_ID,
+        message_id=giveaway.message_id,
+        text=darts_result_text(giveaway, first, second, first_score, second_score, winner, loser, title=title),
+        reply_markup=public_keyboard("darts", active=False),
+        disable_web_page_preview=True,
+    )
+    completed_giveaways["darts"] = CompletedGiveaway(
+        kind="darts",
+        prize=giveaway.prize,
+        participants=list(giveaway.participants),
+        winners=[winner],
+        winners_count=1,
+        message_id=giveaway.message_id,
+    )
+    active_giveaways.pop("darts", None)
+    return f"Победитель дартса: {user_label(winner)}"
+
+
 def participants_text(kind: str) -> str:
     giveaway = active_giveaways.get(kind)
     if not giveaway:
@@ -429,6 +498,9 @@ async def reroll_giveaway(kind: str) -> str:
                     f"🔖 {signature_line()}",
                 ]
             )
+        elif kind == "darts":
+            giveaway = Giveaway(kind="darts", prize=completed.prize, max_players=2, message_id=completed.message_id, participants=list(completed.participants))
+            return await finish_darts(giveaway, reroll=True)
         else:
             title = "Рерол мини-розыгрыша" if kind == "mini" else "Рерол розыгрыша"
             text = result_text(title, completed.prize, new_winners)
@@ -457,6 +529,10 @@ async def finish_giveaway_by_kind(kind: str) -> str:
         return await finish_mini(giveaway)
     if kind == "classic":
         return await finish_classic(giveaway)
+    if kind == "darts":
+        if len(giveaway.participants) < 2:
+            return "Для дартса нужно 2 игрока."
+        return await finish_darts(giveaway)
     if len(giveaway.participants) < 2:
         return "Для дуэли нужно 2 игрока."
     return await finish_duel(giveaway)
@@ -464,7 +540,7 @@ async def finish_giveaway_by_kind(kind: str) -> str:
 
 def status_text() -> str:
     lines = ["📊 <b>Текущий статус бота</b>", ""]
-    for kind in ("mini", "classic", "duel"):
+    for kind in ("mini", "classic", "duel", "darts"):
         giveaway = active_giveaways.get(kind)
         if giveaway:
             lines.append(f"• <b>{KIND_TITLES[kind]}</b>: активен, участников {len(giveaway.participants)}")
@@ -475,7 +551,7 @@ def status_text() -> str:
             f"• <b>Пользователей для рассылки</b>: {len(known_users)}",
             "",
             "Управление:",
-            "• вход в админку через /panel",
+            "• вход в админку кнопкой из /start",
             "• всё остальное делается кнопками",
             "• для активных розыгрышей есть участники, завершение и удаление",
             "• для завершённых есть рерол",
@@ -488,7 +564,7 @@ def active_giveaways_text() -> str:
     lines = ["🗂 <b>Активные розыгрыши</b>", ""]
 
     found = False
-    for kind in ("mini", "classic", "duel"):
+    for kind in ("mini", "classic", "duel", "darts"):
         giveaway = active_giveaways.get(kind)
         if not giveaway:
             continue
@@ -518,13 +594,23 @@ def active_giveaways_text() -> str:
     return "\n".join(lines)
 
 
-@dp.message(Command("start", "panel"))
+@dp.message(Command("start"))
 async def start_handler(message: Message) -> None:
     remember_user(message.from_user.id)
     if not is_admin(message.from_user.id):
-        await message.answer("Бот активен. Участвуй через кнопки под постами в канале.")
+        await message.answer("Бот активен. Участвуй через кнопки под постами в канале.", reply_markup=start_keyboard(message.from_user.id))
         return
-    await message.answer("Панель управления открыта.", reply_markup=admin_keyboard())
+    await message.answer("Нажми кнопку ниже, чтобы открыть админку.", reply_markup=start_keyboard(message.from_user.id))
+
+
+@dp.callback_query(F.data == "open_admin")
+async def open_admin_handler(call: CallbackQuery) -> None:
+    remember_user(call.from_user.id)
+    if not is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    await call.message.answer("Панель управления открыта.", reply_markup=admin_keyboard())
+    await call.answer()
 
 
 @dp.callback_query(F.data == "closed")
@@ -600,6 +686,7 @@ async def create_handler(call: CallbackQuery) -> None:
         "mini": "Пришли приз для мини-розыгрыша.",
         "classic": "Пришли приз для обычного розыгрыша.",
         "duel": "Пришли приз для дуэли.",
+        "darts": "Пришли приз для дартс-дуэли.",
     }
     await call.message.answer(prompts[kind])
     await call.answer()
@@ -671,7 +758,7 @@ async def create_and_publish(message: Message, kind: str, prize: str, winners_co
         kind=kind,
         prize=prize,
         winners_count=winners_count,
-        max_players=MAX_MINI_PLAYERS if kind == "mini" else 2 if kind == "duel" else None,
+        max_players=MAX_MINI_PLAYERS if kind == "mini" else 2 if kind in {"duel", "darts"} else None,
     )
     await publish_giveaway(giveaway)
     admin_state.pop(message.from_user.id, None)
@@ -710,6 +797,12 @@ async def join_handler(call: CallbackQuery) -> None:
         await call.answer("Второй игрок зашёл, дуэль уже сыграна.")
         return
 
+    if kind == "darts" and len(giveaway.participants) == 2:
+        result = await finish_darts(giveaway)
+        await bot.send_message(ADMIN_ID, result)
+        await call.answer("Второй игрок зашёл, дартс уже сыгран.")
+        return
+
     await refresh_giveaway(giveaway, active=True)
 
     if kind == "mini" and len(giveaway.participants) == giveaway.max_players:
@@ -727,8 +820,8 @@ async def on_startup() -> None:
         ADMIN_ID,
         "Бот запущен.\n\n"
         "Что можно делать:\n"
-        "• открыть /panel\n"
-        "• создать мини, розыгрыш или дуэль\n"
+        "• открыть /start и зайти в админку кнопкой\n"
+        "• создать мини, розыгрыш, дуэль или дартс\n"
         "• смотреть участников, завершать, удалять и делать рерол кнопками\n"
         "• менять бренд одной строкой: BRAND_USERNAME, BRAND_AUTHOR",
     )
