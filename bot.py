@@ -18,17 +18,20 @@ TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID_RAW = os.getenv("ADMIN_ID")
 CHANNEL_ID_RAW = os.getenv("CHANNEL_ID")
 USERS_FILE = Path(__file__).with_name("broadcast_users.json")
+ADMINS_FILE = Path(__file__).with_name("extra_admins.json")
 
 # Меняй только эту одну строку.
 BRAND_USERNAME, BRAND_AUTHOR = "@brazers_promo", "от Илюшки"
 
 MAX_MINI_PLAYERS = 6
+MINI_JOIN_COOLDOWN_SECONDS = 5
 KIND_TITLES = {
     "mini": "Мини-розыгрыш",
     "classic": "Розыгрыш",
     "duel": "Дуэль",
     "darts": "Дартс-дуэль",
     "bowling": "Боулинг-дуэль",
+    "football": "Футбол-дуэль",
 }
 
 if not TOKEN or not ADMIN_ID_RAW or not CHANNEL_ID_RAW:
@@ -71,6 +74,27 @@ dp = Dispatcher()
 active_giveaways: Dict[str, Giveaway] = {}
 completed_giveaways: Dict[str, CompletedGiveaway] = {}
 admin_state: Dict[int, dict] = {}
+mini_join_cooldowns: Dict[int, float] = {}
+
+
+def load_extra_admins() -> set[int]:
+    if not ADMINS_FILE.exists():
+        return set()
+
+    try:
+        raw_items = ADMINS_FILE.read_text(encoding="utf-8").splitlines()
+        return {int(item.strip()) for item in raw_items if item.strip() and int(item.strip()) != ADMIN_ID}
+    except Exception:
+        logging.exception("Could not load extra admins")
+        return set()
+
+
+def save_extra_admins() -> None:
+    try:
+        payload = "\n".join(str(user_id) for user_id in sorted(extra_admin_ids))
+        ADMINS_FILE.write_text(payload, encoding="utf-8")
+    except Exception:
+        logging.exception("Could not save extra admins")
 
 
 def load_known_users() -> set[int]:
@@ -101,10 +125,31 @@ def remember_user(user_id: int) -> None:
 
 
 known_users = load_known_users()
+extra_admin_ids = load_extra_admins()
+
+
+def is_owner(user_id: int) -> bool:
+    return user_id == ADMIN_ID
+
+
+def all_admin_ids() -> set[int]:
+    return {ADMIN_ID, *extra_admin_ids}
 
 
 def is_admin(user_id: int) -> bool:
-    return user_id == ADMIN_ID
+    return user_id in all_admin_ids()
+
+
+def admin_list_text() -> str:
+    lines = ["👑 <b>Список админов</b>", "", f"• Главный админ: <code>{ADMIN_ID}</code>"]
+    if extra_admin_ids:
+        lines.append("")
+        lines.append("Дополнительные админы:")
+        lines.extend(f"• <code>{admin_id}</code>" for admin_id in sorted(extra_admin_ids))
+    else:
+        lines.append("")
+        lines.append("Дополнительных админов пока нет.")
+    return "\n".join(lines)
 
 
 def user_label(user_data: dict) -> str:
@@ -204,6 +249,19 @@ def bowling_text(giveaway: Giveaway) -> str:
     return "\n".join(lines)
 
 
+def football_text(giveaway: Giveaway) -> str:
+    lines = [
+        f"⚽ <b>{branded_title('ФУТБОЛ-БИТВА НА ДВОИХ')}</b>",
+        "",
+        f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
+        *promo_lines(),
+        "",
+        f"👤 <b>Игроки:</b> {len(giveaway.participants)}/2",
+        *participants_block(giveaway, "Пока никто не вошёл."),
+    ]
+    return "\n".join(lines)
+
+
 def result_text(title: str, prize: str, winners: List[dict]) -> str:
     winner_lines = [f"• {user_label(winner)}" for winner in winners] or ["• Участников не было"]
     lines = [
@@ -270,6 +328,23 @@ def bowling_result_text(giveaway: Giveaway, first: dict, second: dict, first_sco
     return "\n".join(lines)
 
 
+def football_result_text(giveaway: Giveaway, first: dict, second: dict, first_score: int, second_score: int, winner: dict, loser: dict, title: str = "ФУТБОЛ ЗАВЕРШЁН") -> str:
+    lines = [
+        f"⚽ <b>{title}</b>",
+        "",
+        f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
+        "",
+        f"🥅 {user_label(first)} выбил <b>{first_score}</b>",
+        f"🥅 {user_label(second)} выбил <b>{second_score}</b>",
+        "",
+        f"🏆 <b>Победитель:</b> {user_label(winner)}",
+        f"💨 <b>Не хватило чуть-чуть:</b> {user_label(loser)}",
+        "",
+        f"🔖 {signature_line()}",
+    ]
+    return "\n".join(lines)
+
+
 def public_keyboard(kind: str, active: bool = True) -> InlineKeyboardMarkup:
     labels = {
         "mini": "🎉 Участвовать",
@@ -277,6 +352,7 @@ def public_keyboard(kind: str, active: bool = True) -> InlineKeyboardMarkup:
         "duel": "⚔️ Войти в дуэль",
         "darts": "🎯 Войти в дартс",
         "bowling": "🎳 Войти в боулинг",
+        "football": "⚽ Войти в футбол",
     }
     closed_labels = {
         "mini": "🔒 Набор закрыт",
@@ -284,6 +360,7 @@ def public_keyboard(kind: str, active: bool = True) -> InlineKeyboardMarkup:
         "duel": "🔒 Дуэль завершена",
         "darts": "🔒 Дартс завершён",
         "bowling": "🔒 Боулинг завершён",
+        "football": "🔒 Футбол завершён",
     }
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -303,24 +380,44 @@ def start_keyboard(user_id: int) -> InlineKeyboardMarkup:
 
 
 def admin_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🎉 Создать мини", callback_data="create:mini")],
-            [InlineKeyboardButton(text="🎊 Создать розыгрыш", callback_data="create:classic")],
-            [InlineKeyboardButton(text="⚔️ Создать дуэль", callback_data="create:duel")],
-            [InlineKeyboardButton(text="🎯 Создать дартс", callback_data="create:darts")],
-            [InlineKeyboardButton(text="🎳 Создать боулинг", callback_data="create:bowling")],
-            [InlineKeyboardButton(text="📣 Рассылка", callback_data="broadcast:start")],
-            [InlineKeyboardButton(text="🗂 Активные посты", callback_data="manage")],
-            [InlineKeyboardButton(text="📊 Статус", callback_data="status")],
-            [InlineKeyboardButton(text="🧹 Сбросить ввод", callback_data="reset")],
-        ]
-    )
+    rows = [
+        [InlineKeyboardButton(text="🎉 Создать мини", callback_data="create:mini")],
+        [InlineKeyboardButton(text="🎊 Создать розыгрыш", callback_data="create:classic")],
+        [InlineKeyboardButton(text="⚔️ Создать дуэль", callback_data="create:duel")],
+        [InlineKeyboardButton(text="🎯 Создать дартс", callback_data="create:darts")],
+        [InlineKeyboardButton(text="🎳 Создать боулинг", callback_data="create:bowling")],
+        [InlineKeyboardButton(text="⚽ Создать футбол", callback_data="create:football")],
+        [InlineKeyboardButton(text="📣 Рассылка", callback_data="broadcast:start")],
+        [InlineKeyboardButton(text="🗂 Активные посты", callback_data="manage")],
+        [InlineKeyboardButton(text="📊 Статус", callback_data="status")],
+    ]
+    rows.append([InlineKeyboardButton(text="👑 Админы", callback_data="admins:menu")])
+    rows.append([InlineKeyboardButton(text="🧹 Сбросить ввод", callback_data="reset")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admins_keyboard() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="📋 Список админов", callback_data="admins:list")],
+        [InlineKeyboardButton(text="➕ Выдать админку", callback_data="admins:add")],
+    ]
+    if extra_admin_ids:
+        rows.append([InlineKeyboardButton(text="➖ Удалить админа", callback_data="admins:remove_menu")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def remove_admin_keyboard() -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = []
+    for admin_id in sorted(extra_admin_ids):
+        rows.append([InlineKeyboardButton(text=f"➖ Удалить {admin_id}", callback_data=f"admins:remove:{admin_id}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="admins:menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def manage_keyboard() -> InlineKeyboardMarkup:
     rows: List[List[InlineKeyboardButton]] = []
-    for kind in ("mini", "classic", "duel", "darts", "bowling"):
+    for kind in ("mini", "classic", "duel", "darts", "bowling", "football"):
         if kind in active_giveaways:
             rows.append([InlineKeyboardButton(text=f"👥 Участники: {KIND_TITLES[kind]}", callback_data=f"admin:members:{kind}")])
             rows.append([InlineKeyboardButton(text=f"🏁 Завершить: {KIND_TITLES[kind]}", callback_data=f"admin:finish:{kind}")])
@@ -340,6 +437,8 @@ def current_text(giveaway: Giveaway) -> str:
         return darts_text(giveaway)
     if giveaway.kind == "bowling":
         return bowling_text(giveaway)
+    if giveaway.kind == "football":
+        return football_text(giveaway)
     return duel_text(giveaway)
 
 
@@ -576,6 +675,42 @@ async def finish_bowling(giveaway: Giveaway, reroll: bool = False) -> str:
     return f"Победитель боулинга: {user_label(winner)}"
 
 
+async def finish_football(giveaway: Giveaway, reroll: bool = False) -> str:
+    first, second = giveaway.participants
+    first_ball = await bot.send_dice(chat_id=CHANNEL_ID, emoji="⚽")
+    second_ball = await bot.send_dice(chat_id=CHANNEL_ID, emoji="⚽")
+
+    first_score = first_ball.dice.value
+    second_score = second_ball.dice.value
+    while first_score == second_score:
+        await bot.send_message(CHANNEL_ID, "⚽ Ничья в футболе, бьём ещё раз...")
+        first_ball = await bot.send_dice(chat_id=CHANNEL_ID, emoji="⚽")
+        second_ball = await bot.send_dice(chat_id=CHANNEL_ID, emoji="⚽")
+        first_score = first_ball.dice.value
+        second_score = second_ball.dice.value
+        await asyncio.sleep(0.5)
+
+    winner, loser = (first, second) if first_score > second_score else (second, first)
+    title = "РЕРОЛ ФУТБОЛА" if reroll else "ФУТБОЛ ЗАВЕРШЁН"
+    await bot.edit_message_text(
+        chat_id=CHANNEL_ID,
+        message_id=giveaway.message_id,
+        text=football_result_text(giveaway, first, second, first_score, second_score, winner, loser, title=title),
+        reply_markup=public_keyboard("football", active=False),
+        disable_web_page_preview=True,
+    )
+    completed_giveaways["football"] = CompletedGiveaway(
+        kind="football",
+        prize=giveaway.prize,
+        participants=list(giveaway.participants),
+        winners=[winner],
+        winners_count=1,
+        message_id=giveaway.message_id,
+    )
+    active_giveaways.pop("football", None)
+    return f"Победитель футбола: {user_label(winner)}"
+
+
 def participants_text(kind: str) -> str:
     giveaway = active_giveaways.get(kind)
     if not giveaway:
@@ -611,6 +746,9 @@ async def reroll_giveaway(kind: str) -> str:
         elif kind == "bowling":
             giveaway = Giveaway(kind="bowling", prize=completed.prize, max_players=2, message_id=completed.message_id, participants=list(completed.participants))
             return await finish_bowling(giveaway, reroll=True)
+        elif kind == "football":
+            giveaway = Giveaway(kind="football", prize=completed.prize, max_players=2, message_id=completed.message_id, participants=list(completed.participants))
+            return await finish_football(giveaway, reroll=True)
         elif kind == "mini":
             giveaway = Giveaway(kind="mini", prize=completed.prize, max_players=len(completed.participants), message_id=completed.message_id, participants=list(completed.participants))
             return await finish_mini(giveaway)
@@ -650,6 +788,10 @@ async def finish_giveaway_by_kind(kind: str) -> str:
         if len(giveaway.participants) < 2:
             return "Для боулинга нужно 2 игрока."
         return await finish_bowling(giveaway)
+    if kind == "football":
+        if len(giveaway.participants) < 2:
+            return "Для футбола нужно 2 игрока."
+        return await finish_football(giveaway)
     if len(giveaway.participants) < 2:
         return "Для дуэли нужно 2 игрока."
     return await finish_duel(giveaway)
@@ -657,7 +799,7 @@ async def finish_giveaway_by_kind(kind: str) -> str:
 
 def status_text() -> str:
     lines = ["📊 <b>Текущий статус бота</b>", ""]
-    for kind in ("mini", "classic", "duel", "darts", "bowling"):
+    for kind in ("mini", "classic", "duel", "darts", "bowling", "football"):
         giveaway = active_giveaways.get(kind)
         if giveaway:
             lines.append(f"• <b>{KIND_TITLES[kind]}</b>: активен, участников {len(giveaway.participants)}")
@@ -666,6 +808,7 @@ def status_text() -> str:
     lines.extend(
         [
             f"• <b>Пользователей для рассылки</b>: {len(known_users)}",
+            f"• <b>Всего админов</b>: {len(all_admin_ids())}",
             "",
             "Управление:",
             "• вход в админку кнопкой из /start",
@@ -681,7 +824,7 @@ def active_giveaways_text() -> str:
     lines = ["🗂 <b>Активные розыгрыши</b>", ""]
 
     found = False
-    for kind in ("mini", "classic", "duel", "darts", "bowling"):
+    for kind in ("mini", "classic", "duel", "darts", "bowling", "football"):
         giveaway = active_giveaways.get(kind)
         if not giveaway:
             continue
@@ -755,6 +898,74 @@ async def simple_admin_actions(call: CallbackQuery) -> None:
     await call.answer()
 
 
+@dp.callback_query(F.data == "admins:menu")
+async def admins_menu(call: CallbackQuery) -> None:
+    remember_user(call.from_user.id)
+    if not is_owner(call.from_user.id):
+        await call.answer("Только главный админ может управлять админами", show_alert=True)
+        return
+
+    await call.message.answer("Управление админами.", reply_markup=admins_keyboard())
+    await call.answer()
+
+
+@dp.callback_query(F.data == "admins:list")
+async def admins_list_handler(call: CallbackQuery) -> None:
+    remember_user(call.from_user.id)
+    if not is_owner(call.from_user.id):
+        await call.answer("Только главный админ может смотреть этот список", show_alert=True)
+        return
+
+    await call.message.answer(admin_list_text(), reply_markup=admins_keyboard())
+    await call.answer()
+
+
+@dp.callback_query(F.data == "admins:add")
+async def admins_add_handler(call: CallbackQuery) -> None:
+    remember_user(call.from_user.id)
+    if not is_owner(call.from_user.id):
+        await call.answer("Только главный админ может выдавать права", show_alert=True)
+        return
+
+    admin_state[call.from_user.id] = {"kind": "admin_add", "step": "id"}
+    await call.message.answer("Пришли Telegram ID пользователя, которому нужно выдать админку.")
+    await call.answer()
+
+
+@dp.callback_query(F.data == "admins:remove_menu")
+async def admins_remove_menu_handler(call: CallbackQuery) -> None:
+    remember_user(call.from_user.id)
+    if not is_owner(call.from_user.id):
+        await call.answer("Только главный админ может удалять админов", show_alert=True)
+        return
+
+    if not extra_admin_ids:
+        await call.message.answer("Дополнительных админов сейчас нет.", reply_markup=admins_keyboard())
+        await call.answer()
+        return
+
+    await call.message.answer("Выбери админа для удаления.", reply_markup=remove_admin_keyboard())
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("admins:remove:"))
+async def admins_remove_handler(call: CallbackQuery) -> None:
+    remember_user(call.from_user.id)
+    if not is_owner(call.from_user.id):
+        await call.answer("Только главный админ может удалять админов", show_alert=True)
+        return
+
+    admin_id = int(call.data.split(":")[-1])
+    if admin_id not in extra_admin_ids:
+        await call.answer("Такого дополнительного админа уже нет", show_alert=True)
+        return
+
+    extra_admin_ids.discard(admin_id)
+    save_extra_admins()
+    await call.message.answer(f"Админ <code>{admin_id}</code> удалён.", reply_markup=admins_keyboard())
+    await call.answer("Удалено")
+
+
 @dp.callback_query(F.data == "broadcast:start")
 async def broadcast_start(call: CallbackQuery) -> None:
     remember_user(call.from_user.id)
@@ -805,6 +1016,7 @@ async def create_handler(call: CallbackQuery) -> None:
         "duel": "Пришли приз для дуэли.",
         "darts": "Пришли приз для дартс-дуэли.",
         "bowling": "Пришли приз для боулинг-дуэли.",
+        "football": "Пришли приз для футбол-дуэли.",
     }
     await call.message.answer(prompts[kind])
     await call.answer()
@@ -823,6 +1035,30 @@ async def admin_flow(message: Message) -> None:
     kind = state["kind"]
     step = state["step"]
     text = message.text.strip()
+
+    if kind == "admin_add" and step == "id":
+        if not is_owner(message.from_user.id):
+            admin_state.pop(message.from_user.id, None)
+            return
+
+        if not text.isdigit():
+            await message.answer("Пришли именно числовой Telegram ID.")
+            return
+
+        new_admin_id = int(text)
+        if new_admin_id == ADMIN_ID or new_admin_id in extra_admin_ids:
+            await message.answer("Этот пользователь уже есть в списке админов.", reply_markup=admins_keyboard())
+            admin_state.pop(message.from_user.id, None)
+            return
+
+        extra_admin_ids.add(new_admin_id)
+        save_extra_admins()
+        admin_state.pop(message.from_user.id, None)
+        await message.answer(
+            f"Админка выдана пользователю <code>{new_admin_id}</code>.",
+            reply_markup=admins_keyboard(),
+        )
+        return
 
     if kind == "broadcast" and step == "text":
         if not text:
@@ -876,7 +1112,7 @@ async def create_and_publish(message: Message, kind: str, prize: str, winners_co
         kind=kind,
         prize=prize,
         winners_count=winners_count,
-        max_players=MAX_MINI_PLAYERS if kind == "mini" else 2 if kind in {"duel", "darts", "bowling"} else None,
+        max_players=MAX_MINI_PLAYERS if kind == "mini" else 2 if kind in {"duel", "darts", "bowling", "football"} else None,
     )
     await publish_giveaway(giveaway)
     admin_state.pop(message.from_user.id, None)
@@ -897,6 +1133,14 @@ async def join_handler(call: CallbackQuery) -> None:
         await call.answer("Ты уже участвуешь")
         return
 
+    if kind == "mini":
+        now = asyncio.get_running_loop().time()
+        last_join_time = mini_join_cooldowns.get(call.from_user.id, 0.0)
+        remaining = MINI_JOIN_COOLDOWN_SECONDS - (now - last_join_time)
+        if remaining > 0:
+            await call.answer(f"Подожди {int(remaining) + 1} сек. перед новым нажатием", show_alert=True)
+            return
+
     if giveaway.max_players and len(giveaway.participants) >= giveaway.max_players:
         await call.answer("Свободных мест уже нет", show_alert=True)
         return
@@ -908,6 +1152,8 @@ async def join_handler(call: CallbackQuery) -> None:
             "name": call.from_user.first_name,
         }
     )
+    if kind == "mini":
+        mini_join_cooldowns[call.from_user.id] = asyncio.get_running_loop().time()
 
     if kind == "duel" and len(giveaway.participants) == 2:
         result = await finish_duel(giveaway)
@@ -927,9 +1173,16 @@ async def join_handler(call: CallbackQuery) -> None:
         await call.answer("Второй игрок зашёл, боулинг уже сыгран.")
         return
 
+    if kind == "football" and len(giveaway.participants) == 2:
+        result = await finish_football(giveaway)
+        await bot.send_message(ADMIN_ID, result)
+        await call.answer("Второй игрок зашёл, футбол уже сыгран.")
+        return
+
     await refresh_giveaway(giveaway, active=True)
 
     if kind == "mini" and len(giveaway.participants) == giveaway.max_players:
+        await asyncio.sleep(0.7)
         result = await finish_mini(giveaway)
         await bot.send_message(ADMIN_ID, result)
         await call.answer("Ты успел в мини, победитель уже определён.")
@@ -945,8 +1198,9 @@ async def on_startup() -> None:
         "Бот запущен.\n\n"
         "Что можно делать:\n"
         "• открыть /start и зайти в админку кнопкой\n"
-        "• создать мини, розыгрыш, дуэль, дартс или боулинг\n"
+        "• создать мини, розыгрыш, дуэль, дартс, боулинг или футбол\n"
         "• смотреть участников, завершать, удалять и делать рерол кнопками\n"
+        "• выдавать и удалять админку через раздел админов\n"
         "• менять бренд одной строкой: BRAND_USERNAME, BRAND_AUTHOR",
     )
 
