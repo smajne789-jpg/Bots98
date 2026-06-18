@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import random
@@ -25,6 +26,7 @@ CRYPTO_PAY_TOKEN = os.getenv("CRYPTO_PAY_TOKEN")
 CRYPTO_PAY_API_URL = os.getenv("CRYPTO_PAY_API_URL", "https://pay.crypt.bot/api")
 USERS_FILE = Path(__file__).with_name("broadcast_users.json")
 ADMINS_FILE = Path(__file__).with_name("extra_admins.json")
+PROFILES_FILE = Path(__file__).with_name("user_profiles.json")
 
 # Меняй только эту одну строку.
 BRAND_USERNAME, BRAND_AUTHOR = "@brazers_promo", "от Илюшки"
@@ -97,6 +99,13 @@ def usd_decimal(value: str | Decimal) -> Decimal:
 
 def format_usd(value: str | Decimal) -> str:
     return f"{usd_decimal(value):.2f}"
+
+
+def safe_usd_decimal(value: str | Decimal) -> Decimal:
+    amount = Decimal(str(value).replace("$", "").replace(",", ".").strip() or "0")
+    if amount < 0:
+        raise InvalidOperation
+    return amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 async def notify_admins(text: str) -> None:
@@ -222,6 +231,39 @@ def save_extra_admins() -> None:
     return None
 
 
+def load_user_profiles() -> Dict[str, dict]:
+    if not PROFILES_FILE.exists():
+        return {}
+
+    try:
+        raw = json.loads(PROFILES_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        logging.exception("Could not load user profiles")
+        return {}
+
+    if not isinstance(raw, dict):
+        return {}
+
+    profiles: Dict[str, dict] = {}
+    for key, value in raw.items():
+        if not isinstance(value, dict):
+            continue
+        profile = dict(value)
+        profile.setdefault("balance_usd", "0.00")
+        profile.setdefault("hold_usd", "0.00")
+        profile.setdefault("id", int(key))
+        profiles[str(key)] = profile
+    return profiles
+
+
+def save_user_profiles() -> None:
+    try:
+        payload = json.dumps(user_profiles, ensure_ascii=False, indent=2)
+        PROFILES_FILE.write_text(payload, encoding="utf-8")
+    except Exception:
+        logging.exception("Could not save user profiles")
+
+
 def load_known_users() -> set[int]:
     if not USERS_FILE.exists():
         return set()
@@ -242,15 +284,49 @@ def save_known_users() -> None:
         logging.exception("Could not save known users")
 
 
-def remember_user(user_id: int) -> None:
+def profile_key(user_id: int) -> str:
+    return str(user_id)
+
+
+def ensure_user_profile(user_id: int, username: Optional[str] = None, name: Optional[str] = None) -> dict:
+    key = profile_key(user_id)
+    profile = user_profiles.get(key)
+    if not profile:
+        profile = {
+            "id": user_id,
+            "username": username,
+            "name": name or "Без имени",
+            "balance_usd": "0.00",
+            "hold_usd": "0.00",
+        }
+        user_profiles[key] = profile
+        save_user_profiles()
+        return profile
+
+    changed = False
+    if username is not None and profile.get("username") != username:
+        profile["username"] = username
+        changed = True
+    if name and profile.get("name") != name:
+        profile["name"] = name
+        changed = True
+    if changed:
+        save_user_profiles()
+    return profile
+
+
+def remember_user(user_id: int, username: Optional[str] = None, name: Optional[str] = None) -> None:
     if user_id in known_users:
+        ensure_user_profile(user_id, username, name)
         return
     known_users.add(user_id)
     save_known_users()
+    ensure_user_profile(user_id, username, name)
 
 
 known_users = load_known_users()
 extra_admin_ids = load_extra_admins()
+user_profiles = load_user_profiles()
 
 
 def is_owner(user_id: int) -> bool:
@@ -286,6 +362,44 @@ def user_label(user_data: dict) -> str:
     return escape(user_data.get("name") or "Без имени")
 
 
+def normalize_username(value: str) -> str:
+    return value.strip().lstrip("@").lower()
+
+
+def profile_by_username(value: str) -> Optional[dict]:
+    username = normalize_username(value)
+    if not username:
+        return None
+    for profile in user_profiles.values():
+        if normalize_username(str(profile.get("username") or "")) == username:
+            return profile
+    return None
+
+
+def profile_balance_decimal(profile: dict) -> Decimal:
+    return safe_usd_decimal(profile.get("balance_usd", "0.00") or "0.00")
+
+
+def profile_hold_decimal(profile: dict) -> Decimal:
+    return safe_usd_decimal(profile.get("hold_usd", "0.00") or "0.00")
+
+
+def set_profile_balance(profile: dict, amount: Decimal) -> None:
+    profile["balance_usd"] = f"{amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):.2f}"
+
+
+def set_profile_hold(profile: dict, amount: Decimal) -> None:
+    profile["hold_usd"] = f"{amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):.2f}"
+
+
+def pending_profile_by_check_id(check_id: Any) -> Optional[dict]:
+    check_id_str = str(check_id)
+    for profile in user_profiles.values():
+        if str(profile.get("pending_check_id", "")) == check_id_str:
+            return profile
+    return None
+
+
 def completed_by_check_id(check_id: Any) -> Optional[CompletedGiveaway]:
     check_id_str = str(check_id)
     for completed in completed_giveaways.values():
@@ -296,9 +410,14 @@ def completed_by_check_id(check_id: Any) -> Optional[CompletedGiveaway]:
 
 def check_owner_label(check_id: Any) -> str:
     completed = completed_by_check_id(check_id)
-    if not completed or not completed.winners:
-        return "не найден в локальных розыгрышах"
-    return user_label(completed.winners[0])
+    if completed and completed.winners:
+        return user_label(completed.winners[0])
+
+    profile = pending_profile_by_check_id(check_id)
+    if profile:
+        return user_label(profile)
+
+    return "не найден в локальных розыгрышах"
 
 
 def parse_check_id(value: str) -> Optional[int]:
@@ -309,6 +428,97 @@ def parse_check_id(value: str) -> Optional[int]:
         return int(match.group())
     except ValueError:
         return None
+
+
+def credit_profile_balance(user_data: dict, amount: str | Decimal) -> dict:
+    profile = ensure_user_profile(user_data["id"], user_data.get("username"), user_data.get("name"))
+    new_balance = profile_balance_decimal(profile) + usd_decimal(amount)
+    set_profile_balance(profile, new_balance)
+    save_user_profiles()
+    return profile
+
+
+def change_profile_balance(profile: dict, amount: Decimal) -> None:
+    set_profile_balance(profile, profile_balance_decimal(profile) + amount)
+    save_user_profiles()
+
+
+def clear_profile_pending_check(profile: dict, refund: bool = False) -> None:
+    pending_amount = safe_usd_decimal(profile.get("pending_check_amount_usd", "0.00") or "0.00")
+    current_balance = profile_balance_decimal(profile)
+    current_hold = profile_hold_decimal(profile)
+
+    if refund and pending_amount > 0:
+        set_profile_balance(profile, current_balance + pending_amount)
+        set_profile_hold(profile, max(Decimal("0.00"), current_hold - pending_amount))
+    elif pending_amount > 0 and current_hold > 0:
+        set_profile_hold(profile, max(Decimal("0.00"), current_hold - pending_amount))
+
+    profile.pop("pending_check_id", None)
+    profile.pop("pending_check_url", None)
+    profile.pop("pending_check_amount_usd", None)
+    save_user_profiles()
+
+
+def register_profile_pending_check(profile: dict, amount: Decimal, check: dict) -> None:
+    current_balance = profile_balance_decimal(profile)
+    current_hold = profile_hold_decimal(profile)
+    if current_balance < amount:
+        raise RuntimeError("Недостаточно средств на балансе для вывода")
+
+    set_profile_balance(profile, current_balance - amount)
+    set_profile_hold(profile, current_hold + amount)
+    profile["pending_check_id"] = check["check_id"]
+    profile["pending_check_url"] = check["url"]
+    profile["pending_check_amount_usd"] = f"{amount:.2f}"
+    save_user_profiles()
+
+
+async def sync_profile_pending_check(profile: dict) -> Optional[str]:
+    check_id = profile.get("pending_check_id")
+    if not check_id:
+        return None
+
+    active_checks = await get_crypto_checks(status="active", check_ids=[int(check_id)], count=1)
+    if active_checks:
+        active_check = active_checks[0]
+        check_url = crypto_check_url(active_check) or profile.get("pending_check_url")
+        if not check_url:
+            raise RuntimeError("Crypto Pay не вернул ссылку на активный чек")
+        if check_url:
+            profile["pending_check_url"] = check_url
+        profile["pending_check_id"] = active_check.get("check_id") or active_check.get("id") or check_id
+        save_user_profiles()
+        return str(check_url) if check_url else None
+
+    checks = await get_crypto_checks(check_ids=[int(check_id)], count=1)
+    if checks:
+        status = str(checks[0].get("status", "")).lower()
+        if status in {"activated", "paid", "completed", "used"}:
+            clear_profile_pending_check(profile, refund=False)
+        else:
+            clear_profile_pending_check(profile, refund=True)
+        return None
+
+    clear_profile_pending_check(profile, refund=True)
+    return None
+
+
+async def create_profile_withdraw_check(profile: dict) -> str:
+    amount = profile_balance_decimal(profile)
+    if amount <= 0:
+        raise RuntimeError("Баланс пустой")
+
+    check = await create_crypto_check(f"{amount:.2f}", profile)
+    register_profile_pending_check(profile, amount, check)
+    return str(check["url"])
+
+
+async def ensure_profile_withdraw_check(profile: dict) -> str:
+    active_url = await sync_profile_pending_check(profile)
+    if active_url:
+        return active_url
+    return await create_profile_withdraw_check(profile)
 
 
 def signature_line() -> str:
@@ -352,6 +562,9 @@ def mini_money2_text(giveaway: Giveaway) -> str:
         "",
         f"💵 <b>Приз:</b> ${escape(str(giveaway.meta.get('prize_amount_usd', giveaway.prize)))}",
         f"👥 <b>Участников:</b> {len(giveaway.participants)}/{giveaway.max_players}",
+        "",
+        "🎲 <b>Механика:</b> у каждого свой номер в списке, бот кидает один кубик.",
+        "🏆 <b>Побеждает номер, который выпадет на кубике.</b>",
         "",
         "🎁 <b>Приз выдаётся победителю автоматически.</b>",
         "",
@@ -446,16 +659,18 @@ def result_text(title: str, prize: str, winners: List[dict]) -> str:
     return "\n".join(lines)
 
 
-def mini_money2_result_text(completed: CompletedGiveaway, winner_score: int) -> str:
+def mini_money2_result_text(completed: CompletedGiveaway, winner_number: int) -> str:
     winner = completed.winners[0]
     lines = [
         f"🤑 <b>{branded_title('MINI BABKI 2')}</b>",
         "",
         f"💵 <b>Приз:</b> ${escape(str(completed.meta.get('prize_amount_usd', completed.prize)))}",
-        f"🎲 <b>Победный бросок:</b> {winner_score}",
+        f"🎲 <b>Выпал номер:</b> {winner_number}",
         "",
         f"🏆 <b>Победитель:</b> {user_label(winner)}",
-        "🎁 <b>Забрать приз:</b> кнопка ниже доступна победителю.",
+        f"🔢 <b>Номер победителя в списке:</b> {winner_number}",
+        "💼 <b>Приз зачислен на баланс победителя.</b>",
+        "🎁 <b>Вывод:</b> кнопка ниже выдает чек из баланса победителя.",
         "",
         f"🔖 {signature_line()}",
     ]
@@ -636,8 +851,19 @@ def mini_money2_claim_keyboard(check_url: Optional[str] = None) -> InlineKeyboar
     )
 
 
+def profile_keyboard(profile: dict) -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = []
+    if profile.get("pending_check_url"):
+        rows.append([InlineKeyboardButton(text="Open Active Check", url=str(profile["pending_check_url"]))])
+    elif profile_balance_decimal(profile) > 0:
+        rows.append([InlineKeyboardButton(text="Withdraw To CryptoBot", callback_data="profile:withdraw")])
+    rows.append([InlineKeyboardButton(text="Refresh Profile", callback_data="profile:open")])
+    rows.append([InlineKeyboardButton(text="Open Channel", url=f"https://t.me/{BRAND_USERNAME.lstrip('@')}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def start_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    rows = []
+    rows = [[InlineKeyboardButton(text="Profile", callback_data="profile:open")]]
     if is_admin(user_id):
         rows.append([InlineKeyboardButton(text="🛠 Открыть админку", callback_data="open_admin")])
     rows.append([InlineKeyboardButton(text="📢 Открыть канал", url=f"https://t.me/{BRAND_USERNAME.lstrip('@')}")])
@@ -838,6 +1064,25 @@ async def roll_contest(participants: List[dict], emoji: str, start_text: str) ->
         active_players = leaders
 
 
+async def roll_slot_winner(participants: List[dict], emoji: str, start_text: str) -> tuple[dict, int, List[int]]:
+    intro_message = await bot.send_message(CHANNEL_ID, start_text)
+    temp_message_ids: List[int] = [intro_message.message_id]
+
+    while True:
+        dice_message = await bot.send_dice(chat_id=CHANNEL_ID, emoji=emoji)
+        rolled_number = dice_message.dice.value
+        temp_message_ids.append(dice_message.message_id)
+
+        if 1 <= rolled_number <= len(participants):
+            return participants[rolled_number - 1], rolled_number, temp_message_ids
+
+        reroll_message = await bot.send_message(
+            CHANNEL_ID,
+            f"{emoji} Выпал номер {rolled_number}, а участников только {len(participants)}. Кидаем ещё раз...",
+        )
+        temp_message_ids.append(reroll_message.message_id)
+
+
 async def finish_mini(giveaway: Giveaway) -> str:
     giveaway.finished = True
     winner, winner_score, dice_message_ids = await roll_contest(
@@ -956,10 +1201,10 @@ async def ensure_mini_money2_check(completed: CompletedGiveaway) -> str:
 
 async def finish_mini_money2(giveaway: Giveaway) -> str:
     giveaway.finished = True
-    winner, winner_score, dice_message_ids = await roll_contest(
+    winner, winner_number, dice_message_ids = await roll_slot_winner(
         giveaway.participants,
         "🎲",
-        "🎲 Определяем победителя Mini Babki 2 реальными кубиками...",
+        "🎲 Кидаем один кубик для Mini Babki 2. Побеждает участник с номером, который выпадет на кубике...",
     )
 
     completed = CompletedGiveaway(
@@ -975,7 +1220,7 @@ async def finish_mini_money2(giveaway: Giveaway) -> str:
     await bot.edit_message_text(
         chat_id=CHANNEL_ID,
         message_id=giveaway.message_id,
-        text=mini_money2_result_text(completed, winner_score),
+        text=mini_money2_result_text(completed, winner_number),
         reply_markup=mini_money2_claim_keyboard(),
         disable_web_page_preview=True,
     )
@@ -984,23 +1229,32 @@ async def finish_mini_money2(giveaway: Giveaway) -> str:
     schedule_message_cleanup(CHANNEL_ID, dice_message_ids)
 
     try:
-        check_url = await ensure_mini_money2_check(completed)
-        await bot.edit_message_reply_markup(
-            chat_id=CHANNEL_ID,
-            message_id=giveaway.message_id,
-            reply_markup=mini_money2_claim_keyboard(check_url),
+        profile = credit_profile_balance(winner, str(completed.meta["prize_amount_usd"]))
+    except Exception as exc:
+        logging.exception("Could not credit Mini Babki 2 balance")
+        await notify_admins(f"Mini Babki 2: не удалось зачислить баланс победителю: {escape(str(exc))}")
+        return f"Победитель Mini Babki 2: {user_label(winner)}"
+
+    try:
+        await bot.send_message(
+            winner["id"],
+            "\n".join(
+                [
+                    "🎉 <b>Ты выиграл Mini Babki 2</b>",
+                    "",
+                    f"💵 <b>На баланс зачислено:</b> ${escape(str(completed.meta['prize_amount_usd']))}",
+                    f"💰 <b>Текущий баланс:</b> ${profile['balance_usd']}",
+                    "Открой профиль в боте или нажми кнопку под итоговым постом, чтобы вывести чек.",
+                ]
+            ),
+            reply_markup=profile_keyboard(profile),
+            disable_web_page_preview=True,
         )
     except Exception as exc:
-        logging.exception("Could not create Mini Babki 2 check")
-        await notify_admins(f"Mini Babki 2: не удалось выдать чек автоматически: {escape(str(exc))}")
-    else:
-        try:
-            await send_mini_money2_check_to_winner(completed)
-        except Exception as exc:
-            logging.exception("Could not deliver Mini Babki 2 check to winner")
-            await notify_admins(
-                f"Mini Babki 2: чек создан, но не отправился в личку победителю: {escape(str(exc))}"
-            )
+        logging.exception("Could not notify winner about credited balance")
+        await notify_admins(
+            f"Mini Babki 2: баланс зачислен, но победителю не отправилось сообщение: {escape(str(exc))}"
+        )
 
     return f"Победитель Mini Babki 2: {user_label(winner)}"
 
@@ -1353,6 +1607,11 @@ async def delete_and_unbind_check(check_id: int) -> Optional[CompletedGiveaway]:
     completed = completed_by_check_id(check_id)
     if completed:
         await reset_completed_check_state(completed)
+        return completed
+
+    profile = pending_profile_by_check_id(check_id)
+    if profile:
+        clear_profile_pending_check(profile, refund=True)
     return completed
 
 
@@ -1375,18 +1634,140 @@ async def send_crypto_checks_message(message: Message, confirm_delete_all: bool 
     )
 
 
+def profile_text(profile: dict) -> str:
+    available = profile_balance_decimal(profile)
+    hold = profile_hold_decimal(profile)
+    username_line = (
+        f"@{escape(str(profile['username']))}"
+        if profile.get("username")
+        else escape(str(profile.get("name") or profile.get("id")))
+    )
+    lines = [
+        "👤 <b>Профиль</b>",
+        "",
+        f"🆔 <b>Пользователь:</b> {username_line}",
+        f"💰 <b>Баланс:</b> ${available:.2f}",
+    ]
+    if hold > 0:
+        lines.append(f"⏳ <b>В удержании:</b> ${hold:.2f}")
+    if profile.get("pending_check_id"):
+        lines.append(f"🧾 <b>Активный чек:</b> <code>{escape(str(profile['pending_check_id']))}</code>")
+    lines.extend(["", f"🔖 {signature_line()}"])
+    return "\n".join(lines)
+
+
+def profile_keyboard(profile: dict) -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = []
+    if profile.get("pending_check_url"):
+        rows.append([InlineKeyboardButton(text="🎁 Открыть активный чек", url=str(profile["pending_check_url"]))])
+    elif profile_balance_decimal(profile) > 0:
+        rows.append([InlineKeyboardButton(text="💸 Вывести баланс", callback_data="profile:withdraw")])
+    rows.append([InlineKeyboardButton(text="🔄 Обновить профиль", callback_data="profile:open")])
+    rows.append([InlineKeyboardButton(text="📣 Открыть канал", url=f"https://t.me/{BRAND_USERNAME.lstrip('@')}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def start_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text="👤 Профиль", callback_data="profile:open")]]
+    if is_admin(user_id):
+        rows.append([InlineKeyboardButton(text="🛠 Открыть админку", callback_data="open_admin")])
+    rows.append([InlineKeyboardButton(text="📣 Открыть канал", url=f"https://t.me/{BRAND_USERNAME.lstrip('@')}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_keyboard() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="🤑 Создать Mini Babki 2", callback_data="create:mini_money2")],
+        [InlineKeyboardButton(text="🎉 Создать мини", callback_data="create:mini")],
+        [InlineKeyboardButton(text="🎊 Создать розыгрыш", callback_data="create:classic")],
+        [InlineKeyboardButton(text="⚔️ Создать дуэль", callback_data="create:duel")],
+        [InlineKeyboardButton(text="🎯 Создать дартс", callback_data="create:darts")],
+        [InlineKeyboardButton(text="🎳 Создать боулинг", callback_data="create:bowling")],
+        [InlineKeyboardButton(text="⚽ Создать футбол", callback_data="create:football")],
+        [InlineKeyboardButton(text="💼 Балансы", callback_data="balances:menu")],
+        [InlineKeyboardButton(text="💳 Crypto Pay", callback_data="crypto:menu")],
+        [InlineKeyboardButton(text="🗂 Активные посты", callback_data="manage")],
+        [InlineKeyboardButton(text="📣 Рассылка", callback_data="broadcast:start")],
+        [InlineKeyboardButton(text="📊 Статус", callback_data="status")],
+    ]
+    rows.append([InlineKeyboardButton(text="👑 Админы", callback_data="admins:menu")])
+    rows.append([InlineKeyboardButton(text="🧹 Сбросить ввод", callback_data="reset")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def balances_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Начислить по @username", callback_data="balances:add")],
+            [InlineKeyboardButton(text="➖ Снять по @username", callback_data="balances:subtract")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")],
+        ]
+    )
+
+
+async def send_profile_overview(message: Message, user_data: Any) -> None:
+    profile = ensure_user_profile(user_data.id, user_data.username, user_data.first_name)
+    try:
+        await sync_profile_pending_check(profile)
+    except Exception:
+        logging.exception("Could not sync profile pending check")
+    await message.answer(profile_text(profile), reply_markup=profile_keyboard(profile), disable_web_page_preview=True)
+
+
 @dp.message(Command("start"))
 async def start_handler(message: Message) -> None:
-    remember_user(message.from_user.id)
+    remember_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     if not is_admin(message.from_user.id):
         await message.answer("Бот активен. Участвуй через кнопки под постами в канале.", reply_markup=start_keyboard(message.from_user.id))
         return
     await message.answer("Нажми кнопку ниже, чтобы открыть админку.", reply_markup=start_keyboard(message.from_user.id))
 
 
+@dp.callback_query(F.data == "profile:open")
+async def profile_open_handler(call: CallbackQuery) -> None:
+    remember_user(call.from_user.id, call.from_user.username, call.from_user.first_name)
+    await send_profile_overview(call.message, call.from_user)
+    await call.answer()
+
+
+@dp.callback_query(F.data == "profile:withdraw")
+async def profile_withdraw_handler(call: CallbackQuery) -> None:
+    remember_user(call.from_user.id, call.from_user.username, call.from_user.first_name)
+    profile = ensure_user_profile(call.from_user.id, call.from_user.username, call.from_user.first_name)
+
+    try:
+        check_url = await ensure_profile_withdraw_check(profile)
+    except Exception as exc:
+        logging.exception("Could not withdraw profile balance")
+        await call.answer(f"Не удалось вывести баланс: {escape(str(exc))}", show_alert=True)
+        return
+
+    if profile.get("pending_check_url") != check_url:
+        profile["pending_check_url"] = check_url
+        save_user_profiles()
+
+    await call.message.answer(
+        profile_text(profile),
+        reply_markup=profile_keyboard(profile),
+        disable_web_page_preview=True,
+    )
+    try:
+        await bot.send_message(
+            call.from_user.id,
+            f"🎁 Твой чек на ${escape(str(profile.get('pending_check_amount_usd', '0.00')))} готов.",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="🎁 Открыть чек", url=check_url)]]
+            ),
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        logging.exception("Could not send profile withdrawal check to DM")
+    await call.answer("Чек на вывод готов", show_alert=True)
+
+
 @dp.callback_query(F.data == "open_admin")
 async def open_admin_handler(call: CallbackQuery) -> None:
-    remember_user(call.from_user.id)
+    remember_user(call.from_user.id, call.from_user.username, call.from_user.first_name)
     if not is_admin(call.from_user.id):
         await call.answer("Нет доступа", show_alert=True)
         return
@@ -1401,7 +1782,7 @@ async def closed_handler(call: CallbackQuery) -> None:
 
 @dp.callback_query(F.data.in_({"status", "reset", "manage", "back"}))
 async def simple_admin_actions(call: CallbackQuery) -> None:
-    remember_user(call.from_user.id)
+    remember_user(call.from_user.id, call.from_user.username, call.from_user.first_name)
     if not is_admin(call.from_user.id):
         await call.answer("Нет доступа", show_alert=True)
         return
@@ -1416,6 +1797,34 @@ async def simple_admin_actions(call: CallbackQuery) -> None:
     else:
         await call.message.answer("Возвращаю панель.", reply_markup=admin_keyboard())
 
+    await call.answer()
+
+
+@dp.callback_query(F.data == "balances:menu")
+async def balances_menu_handler(call: CallbackQuery) -> None:
+    remember_user(call.from_user.id, call.from_user.username, call.from_user.first_name)
+    if not is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    await call.message.answer(
+        "Управление балансами.\nМожно начислить или снять сумму по @username.",
+        reply_markup=balances_keyboard(),
+    )
+    await call.answer()
+
+
+@dp.callback_query(F.data.in_({"balances:add", "balances:subtract"}))
+async def balances_action_handler(call: CallbackQuery) -> None:
+    remember_user(call.from_user.id, call.from_user.username, call.from_user.first_name)
+    if not is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    action = "add" if call.data.endswith("add") else "subtract"
+    admin_state[call.from_user.id] = {"kind": f"balance_{action}", "step": "username"}
+    prompt = "Пришли @username пользователя." if action == "add" else "Пришли @username пользователя для списания."
+    await call.message.answer(prompt, reply_markup=balances_keyboard())
     await call.answer()
 
 
@@ -1656,7 +2065,7 @@ async def create_handler(call: CallbackQuery) -> None:
 
 @dp.message(F.text)
 async def admin_flow(message: Message) -> None:
-    remember_user(message.from_user.id)
+    remember_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     if not is_admin(message.from_user.id):
         return
 
@@ -1710,6 +2119,54 @@ async def admin_flow(message: Message) -> None:
         await message.answer(
             f"Рассылка завершена.\n\nУспешно: {sent}\nНе доставлено: {failed}",
             reply_markup=admin_keyboard(),
+        )
+        return
+
+    if kind in {"balance_add", "balance_subtract"} and step == "username":
+        profile = profile_by_username(text)
+        if not profile:
+            await message.answer("Пользователь с таким @username не найден в профилях бота.")
+            return
+
+        state["username"] = str(profile.get("username") or "")
+        state["step"] = "amount"
+        action_text = "начислить" if kind == "balance_add" else "снять"
+        await message.answer(f"Пришли сумму в USD, которую нужно {action_text} для {user_label(profile)}.")
+        return
+
+    if kind in {"balance_add", "balance_subtract"} and step == "amount":
+        profile = profile_by_username(state.get("username", ""))
+        if not profile:
+            admin_state.pop(message.from_user.id, None)
+            await message.answer("Профиль пользователя больше не найден.", reply_markup=balances_keyboard())
+            return
+
+        try:
+            amount = usd_decimal(text)
+        except InvalidOperation:
+            await message.answer("Пришли корректную сумму в USD. Например: 5 или 12.50")
+            return
+
+        current_balance = profile_balance_decimal(profile)
+        if kind == "balance_subtract" and current_balance < amount:
+            await message.answer(
+                f"Недостаточно средств на балансе. Сейчас доступно: ${current_balance:.2f}",
+                reply_markup=balances_keyboard(),
+            )
+            return
+
+        change_profile_balance(profile, amount if kind == "balance_add" else -amount)
+        admin_state.pop(message.from_user.id, None)
+        action_text = "начислен" if kind == "balance_add" else "списан"
+        await message.answer(
+            "\n".join(
+                [
+                    f"Баланс {action_text} для {user_label(profile)}.",
+                    f"Сумма: ${amount:.2f}",
+                    f"Новый баланс: ${profile['balance_usd']}",
+                ]
+            ),
+            reply_markup=balances_keyboard(),
         )
         return
 
@@ -1809,10 +2266,13 @@ async def create_and_publish(message: Message, kind: str, prize: str, winners_co
         await message.answer(
             "\n".join(
                 [
-                    "Mini Babki 2 опубликован в канале.",
-                    f"Сумма приза: ${escape(str(giveaway.meta['prize_amount_usd']))}",
-                    "Счёт на оплату:",
+                    "🤑 <b>Mini Babki 2 опубликован</b>",
+                    "",
+                    f"💵 <b>Приз:</b> ${escape(str(giveaway.meta['prize_amount_usd']))}",
+                    "💳 <b>Счёт на оплату:</b>",
                     giveaway.meta["crypto_invoice_url"],
+                    "",
+                    "🎁 После победы сумма зачислится на баланс пользователя.",
                 ]
             ),
             reply_markup=admin_keyboard(),
@@ -1823,7 +2283,7 @@ async def create_and_publish(message: Message, kind: str, prize: str, winners_co
 
 @dp.callback_query(F.data.startswith("join:"))
 async def join_handler(call: CallbackQuery) -> None:
-    remember_user(call.from_user.id)
+    remember_user(call.from_user.id, call.from_user.username, call.from_user.first_name)
     kind = call.data.split(":", 1)[1]
     giveaway = active_giveaways.get(kind)
 
@@ -1915,6 +2375,7 @@ async def join_handler(call: CallbackQuery) -> None:
 
 @dp.callback_query(F.data == "claim:mini_money2")
 async def claim_mini_money2(call: CallbackQuery) -> None:
+    remember_user(call.from_user.id, call.from_user.username, call.from_user.first_name)
     completed = completed_giveaways.get("mini_money2")
     if not completed or not completed.winners:
         await call.answer("Сейчас нечего забирать", show_alert=True)
@@ -1926,7 +2387,8 @@ async def claim_mini_money2(call: CallbackQuery) -> None:
         return
 
     try:
-        check_url = await ensure_mini_money2_check(completed)
+        profile = ensure_user_profile(call.from_user.id, call.from_user.username, call.from_user.first_name)
+        check_url = await ensure_profile_withdraw_check(profile)
         if completed.message_id is not None:
             await bot.edit_message_reply_markup(
                 chat_id=CHANNEL_ID,
@@ -1934,15 +2396,20 @@ async def claim_mini_money2(call: CallbackQuery) -> None:
                 reply_markup=mini_money2_claim_keyboard(check_url),
             )
     except Exception as exc:
-        logging.exception("Could not resend Mini Babki 2 check")
-        await notify_admins(f"Mini Babki 2: ошибка повторной выдачи чека: {escape(str(exc))}")
-        await call.answer("Не удалось выдать чек, админы уже получили уведомление", show_alert=True)
+        logging.exception("Could not withdraw Mini Babki 2 balance")
+        await notify_admins(f"Mini Babki 2: ошибка вывода баланса победителя: {escape(str(exc))}")
+        await call.answer("Не удалось вывести баланс, админы уже получили уведомление", show_alert=True)
         return
 
     try:
         await bot.send_message(
             call.from_user.id,
-            f"🎁 Твой чек на ${escape(str(completed.meta.get('prize_amount_usd', completed.prize)))}",
+            "\n".join(
+                [
+                    "🎁 <b>Твой чек готов</b>",
+                    f"💵 <b>Сумма чека:</b> ${escape(str(profile.get('pending_check_amount_usd', '0.00')))}",
+                ]
+            ),
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text="🎁 Открыть чек", url=check_url)]]
             ),
