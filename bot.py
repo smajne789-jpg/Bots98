@@ -158,6 +158,32 @@ async def create_crypto_check(amount_usd: str, winner: dict) -> dict:
     return {"check_id": result.get("check_id") or result.get("id"), "url": url}
 
 
+async def get_crypto_checks(
+    *,
+    status: Optional[str] = None,
+    check_ids: Optional[List[int]] = None,
+    count: int = 100,
+    offset: int = 0,
+) -> List[dict]:
+    payload: Dict[str, Any] = {"count": count, "offset": offset}
+    if status:
+        payload["status"] = status
+    if check_ids:
+        payload["check_ids"] = ",".join(str(check_id) for check_id in check_ids)
+
+    result = await crypto_pay_request("getChecks", payload)
+    return result if isinstance(result, list) else []
+
+
+async def delete_crypto_check(check_id: int) -> None:
+    await crypto_pay_request("deleteCheck", {"check_id": check_id})
+
+
+async def get_crypto_balances() -> List[dict]:
+    result = await crypto_pay_request("getBalance", {})
+    return result if isinstance(result, list) else []
+
+
 def load_extra_admins() -> set[int]:
     try:
         return {
@@ -236,6 +262,21 @@ def user_label(user_data: dict) -> str:
     if username:
         return f"@{escape(username)}"
     return escape(user_data.get("name") or "Без имени")
+
+
+def completed_by_check_id(check_id: Any) -> Optional[CompletedGiveaway]:
+    check_id_str = str(check_id)
+    for completed in completed_giveaways.values():
+        if str(completed.meta.get("claim_check_id", "")) == check_id_str:
+            return completed
+    return None
+
+
+def check_owner_label(check_id: Any) -> str:
+    completed = completed_by_check_id(check_id)
+    if not completed or not completed.winners:
+        return "не найден в локальных розыгрышах"
+    return user_label(completed.winners[0])
 
 
 def signature_line() -> str:
@@ -389,6 +430,54 @@ def mini_money2_result_text(completed: CompletedGiveaway, winner_score: int) -> 
     return "\n".join(lines)
 
 
+def crypto_checks_text(checks: List[dict]) -> str:
+    lines = ["💳 <b>Активные чеки Crypto Pay</b>", ""]
+    if not checks:
+        lines.append("Сейчас активных чеков нет.")
+        return "\n".join(lines)
+
+    for check in checks[:20]:
+        check_id = check.get("check_id") or check.get("id") or "?"
+        amount = check.get("amount") or "0"
+        asset = check.get("asset") or "USDT"
+        created_at = escape(str(check.get("created_at") or "неизвестно"))
+        owner = escape(check_owner_label(check_id))
+        lines.extend(
+            [
+                f"• <b>Чек #{escape(str(check_id))}</b> — {escape(str(amount))} {escape(str(asset))}",
+                f"  Победитель: {owner}",
+                f"  Создан: {created_at}",
+            ]
+        )
+
+    hidden_count = max(len(checks) - 20, 0)
+    if hidden_count:
+        lines.extend(["", f"…и ещё {hidden_count} активных чеков."])
+
+    return "\n".join(lines)
+
+
+def crypto_balance_text(balances: List[dict], active_checks_count: int) -> str:
+    lines = ["💰 <b>Crypto Pay баланс</b>", ""]
+    if not balances:
+        lines.append("Баланс не вернулся из API.")
+    else:
+        for balance in balances:
+            currency = escape(str(balance.get("currency_code") or balance.get("currency") or "?"))
+            available = escape(str(balance.get("available") or "0"))
+            onhold = escape(str(balance.get("onhold") or "0"))
+            lines.append(f"• <b>{currency}</b>: доступно {available}, в удержании {onhold}")
+
+    lines.extend(
+        [
+            "",
+            f"🧾 <b>Активных чеков:</b> {active_checks_count}",
+            "Удаление активных чеков освобождает сумму из удержания.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def duel_result_text(giveaway: Giveaway, first: dict, second: dict, first_roll: int, second_roll: int, winner: dict, loser: dict) -> str:
     lines = [
         "🔥 <b>ДУЭЛЬ ЗАВЕРШЕНА</b>",
@@ -515,6 +604,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⚽ Создать футбол", callback_data="create:football")],
         [InlineKeyboardButton(text="📣 Рассылка", callback_data="broadcast:start")],
         [InlineKeyboardButton(text="🗂 Активные посты", callback_data="manage")],
+        [InlineKeyboardButton(text="💳 Crypto Pay", callback_data="crypto:menu")],
         [InlineKeyboardButton(text="📊 Статус", callback_data="status")],
     ]
     rows.append([InlineKeyboardButton(text="👑 Админы", callback_data="admins:menu")])
@@ -551,6 +641,47 @@ def manage_keyboard() -> InlineKeyboardMarkup:
         if kind in completed_giveaways:
             rows.append([InlineKeyboardButton(text=f"🎲 Рерол: {KIND_TITLES[kind]}", callback_data=f"admin:reroll:{kind}")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def crypto_menu_keyboard(confirm_delete_all: bool = False, has_checks: bool = True) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="💰 Баланс и удержание", callback_data="crypto:status")],
+        [InlineKeyboardButton(text="🧾 Активные чеки", callback_data="crypto:checks")],
+    ]
+    if has_checks:
+        if confirm_delete_all:
+            rows.append([InlineKeyboardButton(text="⚠️ Подтвердить удаление всех чеков", callback_data="crypto:delete_all")])
+            rows.append([InlineKeyboardButton(text="↩️ Не удалять", callback_data="crypto:checks")])
+        else:
+            rows.append([InlineKeyboardButton(text="🗑 Удалить все активные чеки", callback_data="crypto:delete_all:confirm")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def crypto_checks_keyboard(checks: List[dict], confirm_delete_all: bool = False) -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = []
+    for check in checks[:20]:
+        check_id = check.get("check_id") or check.get("id")
+        amount = check.get("amount") or "0"
+        asset = check.get("asset") or "USDT"
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"🗑 Чек #{check_id} • {amount} {asset}",
+                    callback_data=f"crypto:delete:{check_id}",
+                )
+            ]
+        )
+
+    rows.append([InlineKeyboardButton(text="🔄 Обновить список", callback_data="crypto:checks")])
+    if checks:
+        if confirm_delete_all:
+            rows.append([InlineKeyboardButton(text="⚠️ Подтвердить удаление всех чеков", callback_data="crypto:delete_all")])
+            rows.append([InlineKeyboardButton(text="↩️ Не удалять", callback_data="crypto:checks")])
+        else:
+            rows.append([InlineKeyboardButton(text="🗑 Удалить все активные чеки", callback_data="crypto:delete_all:confirm")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="crypto:menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -722,9 +853,47 @@ async def send_mini_money2_check_to_winner(completed: CompletedGiveaway) -> None
     )
 
 
+async def reset_completed_check_state(completed: CompletedGiveaway) -> None:
+    completed.meta.pop("claim_check_url", None)
+    completed.meta.pop("claim_check_id", None)
+    if completed.kind == "mini_money2" and completed.message_id is not None:
+        try:
+            await bot.edit_message_reply_markup(
+                chat_id=CHANNEL_ID,
+                message_id=completed.message_id,
+                reply_markup=mini_money2_claim_keyboard(),
+            )
+        except Exception:
+            logging.exception("Could not reset Mini Babki 2 claim button")
+
+
+async def get_active_check_url(completed: CompletedGiveaway) -> Optional[str]:
+    check_id = completed.meta.get("claim_check_id")
+    if not check_id:
+        return None
+
+    checks = await get_crypto_checks(status="active", check_ids=[int(check_id)], count=1)
+    if not checks:
+        await reset_completed_check_state(completed)
+        return None
+
+    check = checks[0]
+    check_url = crypto_check_url(check) or completed.meta.get("claim_check_url")
+    if check_url:
+        completed.meta["claim_check_url"] = check_url
+    completed.meta["claim_check_id"] = check.get("check_id") or check.get("id") or check_id
+    return str(check_url) if check_url else None
+
+
 async def ensure_mini_money2_check(completed: CompletedGiveaway) -> str:
-    if completed.meta.get("claim_check_url"):
-        return str(completed.meta["claim_check_url"])
+    if completed.meta.get("claim_check_url") and completed.meta.get("claim_check_id"):
+        try:
+            active_check_url = await get_active_check_url(completed)
+        except Exception:
+            logging.exception("Could not verify existing Mini Babki 2 check")
+            return str(completed.meta["claim_check_url"])
+        if active_check_url:
+            return active_check_url
 
     check = await create_crypto_check(str(completed.meta["prize_amount_usd"]), completed.winners[0])
     completed.meta["claim_check_url"] = check["url"]
@@ -843,15 +1012,19 @@ async def finish_duel(giveaway: Giveaway) -> str:
 
 async def finish_darts(giveaway: Giveaway, reroll: bool = False) -> str:
     first, second = giveaway.participants
+    dart_message_ids: List[int] = []
     first_dart = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎯")
     second_dart = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎯")
+    dart_message_ids.extend([first_dart.message_id, second_dart.message_id])
 
     first_score = first_dart.dice.value
     second_score = second_dart.dice.value
     while first_score == second_score:
         tie_break = await bot.send_message(CHANNEL_ID, "🎯 Ничья в дартсе, кидаем ещё раз...")
+        dart_message_ids.append(tie_break.message_id)
         first_dart = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎯")
         second_dart = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎯")
+        dart_message_ids.extend([first_dart.message_id, second_dart.message_id])
         first_score = first_dart.dice.value
         second_score = second_dart.dice.value
         await asyncio.sleep(0.5)
@@ -874,20 +1047,25 @@ async def finish_darts(giveaway: Giveaway, reroll: bool = False) -> str:
         message_id=giveaway.message_id,
     )
     active_giveaways.pop("darts", None)
+    schedule_message_cleanup(CHANNEL_ID, dart_message_ids)
     return f"Победитель дартса: {user_label(winner)}"
 
 
 async def finish_bowling(giveaway: Giveaway, reroll: bool = False) -> str:
     first, second = giveaway.participants
+    bowl_message_ids: List[int] = []
     first_ball = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎳")
     second_ball = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎳")
+    bowl_message_ids.extend([first_ball.message_id, second_ball.message_id])
 
     first_score = first_ball.dice.value
     second_score = second_ball.dice.value
     while first_score == second_score:
-        await bot.send_message(CHANNEL_ID, "🎳 Ничья в боулинге, кидаем ещё раз...")
+        tie_break = await bot.send_message(CHANNEL_ID, "🎳 Ничья в боулинге, кидаем ещё раз...")
+        bowl_message_ids.append(tie_break.message_id)
         first_ball = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎳")
         second_ball = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎳")
+        bowl_message_ids.extend([first_ball.message_id, second_ball.message_id])
         first_score = first_ball.dice.value
         second_score = second_ball.dice.value
         await asyncio.sleep(0.5)
@@ -910,20 +1088,25 @@ async def finish_bowling(giveaway: Giveaway, reroll: bool = False) -> str:
         message_id=giveaway.message_id,
     )
     active_giveaways.pop("bowling", None)
+    schedule_message_cleanup(CHANNEL_ID, bowl_message_ids)
     return f"Победитель боулинга: {user_label(winner)}"
 
 
 async def finish_football(giveaway: Giveaway, reroll: bool = False) -> str:
     first, second = giveaway.participants
+    football_message_ids: List[int] = []
     first_ball = await bot.send_dice(chat_id=CHANNEL_ID, emoji="⚽")
     second_ball = await bot.send_dice(chat_id=CHANNEL_ID, emoji="⚽")
+    football_message_ids.extend([first_ball.message_id, second_ball.message_id])
 
     first_score = first_ball.dice.value
     second_score = second_ball.dice.value
     while first_score == second_score:
-        await bot.send_message(CHANNEL_ID, "⚽ Ничья в футболе, бьём ещё раз...")
+        tie_break = await bot.send_message(CHANNEL_ID, "⚽ Ничья в футболе, бьём ещё раз...")
+        football_message_ids.append(tie_break.message_id)
         first_ball = await bot.send_dice(chat_id=CHANNEL_ID, emoji="⚽")
         second_ball = await bot.send_dice(chat_id=CHANNEL_ID, emoji="⚽")
+        football_message_ids.extend([first_ball.message_id, second_ball.message_id])
         first_score = first_ball.dice.value
         second_score = second_ball.dice.value
         await asyncio.sleep(0.5)
@@ -946,6 +1129,7 @@ async def finish_football(giveaway: Giveaway, reroll: bool = False) -> str:
         message_id=giveaway.message_id,
     )
     active_giveaways.pop("football", None)
+    schedule_message_cleanup(CHANNEL_ID, football_message_ids)
     return f"Победитель футбола: {user_label(winner)}"
 
 
@@ -1107,6 +1291,36 @@ def active_giveaways_text() -> str:
     return "\n".join(lines)
 
 
+async def active_crypto_checks() -> List[dict]:
+    return await get_crypto_checks(status="active", count=100)
+
+
+async def delete_and_unbind_check(check_id: int) -> Optional[CompletedGiveaway]:
+    await delete_crypto_check(check_id)
+    completed = completed_by_check_id(check_id)
+    if completed:
+        await reset_completed_check_state(completed)
+    return completed
+
+
+async def send_crypto_status_message(message: Message) -> None:
+    balances = await get_crypto_balances()
+    checks = await active_crypto_checks()
+    await message.answer(
+        crypto_balance_text(balances, len(checks)),
+        reply_markup=crypto_menu_keyboard(has_checks=bool(checks)),
+    )
+
+
+async def send_crypto_checks_message(message: Message, confirm_delete_all: bool = False) -> None:
+    checks = await active_crypto_checks()
+    await message.answer(
+        crypto_checks_text(checks),
+        reply_markup=crypto_checks_keyboard(checks, confirm_delete_all=confirm_delete_all),
+        disable_web_page_preview=True,
+    )
+
+
 @dp.message(Command("start"))
 async def start_handler(message: Message) -> None:
     remember_user(message.from_user.id)
@@ -1149,6 +1363,101 @@ async def simple_admin_actions(call: CallbackQuery) -> None:
         await call.message.answer("Возвращаю панель.", reply_markup=admin_keyboard())
 
     await call.answer()
+
+
+@dp.callback_query(F.data == "crypto:menu")
+async def crypto_menu_handler(call: CallbackQuery) -> None:
+    remember_user(call.from_user.id)
+    if not is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    try:
+        checks = await active_crypto_checks()
+    except Exception as exc:
+        logging.exception("Could not open Crypto Pay menu")
+        await call.message.answer(f"Не удалось открыть Crypto Pay меню: {escape(str(exc))}", reply_markup=admin_keyboard())
+    else:
+        await call.message.answer(
+            "Управление Crypto Pay.\nЗдесь можно смотреть удержание и удалять активные чеки.",
+            reply_markup=crypto_menu_keyboard(has_checks=bool(checks)),
+        )
+    await call.answer()
+
+
+@dp.callback_query(F.data.in_({"crypto:status", "crypto:checks", "crypto:delete_all:confirm", "crypto:delete_all"}))
+async def crypto_actions_handler(call: CallbackQuery) -> None:
+    remember_user(call.from_user.id)
+    if not is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    try:
+        if call.data == "crypto:status":
+            await send_crypto_status_message(call.message)
+        elif call.data == "crypto:checks":
+            await send_crypto_checks_message(call.message)
+        elif call.data == "crypto:delete_all:confirm":
+            await send_crypto_checks_message(call.message, confirm_delete_all=True)
+        else:
+            checks = await active_crypto_checks()
+            if not checks:
+                await call.message.answer("Активных чеков уже нет.", reply_markup=crypto_menu_keyboard(has_checks=False))
+                await call.answer("Пусто")
+                return
+
+            deleted_count = 0
+            released_assets: Dict[str, Decimal] = {}
+            for check in checks:
+                check_id = check.get("check_id") or check.get("id")
+                if not check_id:
+                    continue
+                await delete_and_unbind_check(int(check_id))
+                deleted_count += 1
+                asset = str(check.get("asset") or "USDT")
+                released_assets.setdefault(asset, Decimal("0"))
+                try:
+                    released_assets[asset] += Decimal(str(check.get("amount") or "0"))
+                except Exception:
+                    pass
+
+            released_text = ", ".join(
+                f"{amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)} {asset}"
+                for asset, amount in released_assets.items()
+            ) or "сумма не определена"
+            await call.message.answer(
+                f"Удалил активные чеки: {deleted_count}.\nОсвобождено из удержания примерно: {released_text}.",
+                reply_markup=crypto_menu_keyboard(has_checks=False),
+            )
+        await call.answer("Готово")
+    except Exception as exc:
+        logging.exception("Crypto Pay action failed")
+        await call.message.answer(f"Crypto Pay ошибка: {escape(str(exc))}", reply_markup=crypto_menu_keyboard(has_checks=True))
+        await call.answer("Ошибка", show_alert=True)
+
+
+@dp.callback_query(F.data.startswith("crypto:delete:"))
+async def crypto_delete_single_handler(call: CallbackQuery) -> None:
+    remember_user(call.from_user.id)
+    if not is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    try:
+        check_id = int(call.data.split(":")[-1])
+        completed = await delete_and_unbind_check(check_id)
+        suffix = ""
+        if completed and completed.winners:
+            suffix = f"\nПривязка к победителю сброшена: {user_label(completed.winners[0])}."
+        await call.message.answer(
+            f"Чек #{check_id} удалён.{suffix}",
+            reply_markup=crypto_menu_keyboard(has_checks=True),
+        )
+        await call.answer("Удалено")
+    except Exception as exc:
+        logging.exception("Could not delete Crypto Pay check")
+        await call.message.answer(f"Не удалось удалить чек: {escape(str(exc))}", reply_markup=crypto_menu_keyboard(has_checks=True))
+        await call.answer("Ошибка", show_alert=True)
 
 
 @dp.callback_query(F.data == "admins:menu")
