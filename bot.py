@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import random
+import re
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from html import escape
@@ -158,6 +159,11 @@ async def create_crypto_check(amount_usd: str, winner: dict) -> dict:
     return {"check_id": result.get("check_id") or result.get("id"), "url": url}
 
 
+async def get_crypto_app() -> dict:
+    result = await crypto_pay_request("getMe", {})
+    return result if isinstance(result, dict) else {}
+
+
 async def get_crypto_checks(
     *,
     status: Optional[str] = None,
@@ -182,6 +188,22 @@ async def delete_crypto_check(check_id: int) -> None:
 async def get_crypto_balances() -> List[dict]:
     result = await crypto_pay_request("getBalance", {})
     return result if isinstance(result, list) else []
+
+
+async def get_all_crypto_checks(status: Optional[str] = None) -> List[dict]:
+    checks: List[dict] = []
+    offset = 0
+
+    while True:
+        batch = await get_crypto_checks(status=status, count=1000, offset=offset)
+        if not batch:
+            break
+        checks.extend(batch)
+        if len(batch) < 1000:
+            break
+        offset += len(batch)
+
+    return checks
 
 
 def load_extra_admins() -> set[int]:
@@ -277,6 +299,16 @@ def check_owner_label(check_id: Any) -> str:
     if not completed or not completed.winners:
         return "не найден в локальных розыгрышах"
     return user_label(completed.winners[0])
+
+
+def parse_check_id(value: str) -> Optional[int]:
+    match = re.search(r"\d+", value)
+    if not match:
+        return None
+    try:
+        return int(match.group())
+    except ValueError:
+        return None
 
 
 def signature_line() -> str:
@@ -457,8 +489,14 @@ def crypto_checks_text(checks: List[dict]) -> str:
     return "\n".join(lines)
 
 
-def crypto_balance_text(balances: List[dict], active_checks_count: int) -> str:
+def crypto_balance_text(app_info: dict, balances: List[dict], active_checks_count: int) -> str:
     lines = ["💰 <b>Crypto Pay баланс</b>", ""]
+    app_name = escape(str(app_info.get("name") or app_info.get("app_name") or "неизвестное приложение"))
+    app_id = escape(str(app_info.get("app_id") or app_info.get("id") or "?"))
+    lines.append(f"🤖 <b>Приложение:</b> {app_name} (ID: <code>{app_id}</code>)")
+    lines.append("")
+
+    total_onhold = Decimal("0")
     if not balances:
         lines.append("Баланс не вернулся из API.")
     else:
@@ -466,6 +504,10 @@ def crypto_balance_text(balances: List[dict], active_checks_count: int) -> str:
             currency = escape(str(balance.get("currency_code") or balance.get("currency") or "?"))
             available = escape(str(balance.get("available") or "0"))
             onhold = escape(str(balance.get("onhold") or "0"))
+            try:
+                total_onhold += Decimal(str(balance.get("onhold") or "0"))
+            except Exception:
+                pass
             lines.append(f"• <b>{currency}</b>: доступно {available}, в удержании {onhold}")
 
     lines.extend(
@@ -475,6 +517,15 @@ def crypto_balance_text(balances: List[dict], active_checks_count: int) -> str:
             "Удаление активных чеков освобождает сумму из удержания.",
         ]
     )
+    if total_onhold > 0 and active_checks_count == 0:
+        lines.extend(
+            [
+                "",
+                "⚠️ <b>Чеки не найдены, но onhold есть.</b>",
+                "Скорее всего в CRYPTO_PAY_TOKEN стоит токен не от того Crypto Pay приложения.",
+                "Сверь название и ID приложения выше с тем приложением, где ты видишь удержание в CryptoBot.",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -648,6 +699,7 @@ def crypto_menu_keyboard(confirm_delete_all: bool = False, has_checks: bool = Tr
     rows = [
         [InlineKeyboardButton(text="💰 Баланс и удержание", callback_data="crypto:status")],
         [InlineKeyboardButton(text="🧾 Активные чеки", callback_data="crypto:checks")],
+        [InlineKeyboardButton(text="✍️ Удалить чек по ID", callback_data="crypto:delete_manual")],
     ]
     if has_checks:
         if confirm_delete_all:
@@ -675,6 +727,7 @@ def crypto_checks_keyboard(checks: List[dict], confirm_delete_all: bool = False)
         )
 
     rows.append([InlineKeyboardButton(text="🔄 Обновить список", callback_data="crypto:checks")])
+    rows.append([InlineKeyboardButton(text="✍️ Удалить чек по ID", callback_data="crypto:delete_manual")])
     if checks:
         if confirm_delete_all:
             rows.append([InlineKeyboardButton(text="⚠️ Подтвердить удаление всех чеков", callback_data="crypto:delete_all")])
@@ -1292,7 +1345,7 @@ def active_giveaways_text() -> str:
 
 
 async def active_crypto_checks() -> List[dict]:
-    return await get_crypto_checks(status="active", count=100)
+    return await get_all_crypto_checks(status="active")
 
 
 async def delete_and_unbind_check(check_id: int) -> Optional[CompletedGiveaway]:
@@ -1304,10 +1357,11 @@ async def delete_and_unbind_check(check_id: int) -> Optional[CompletedGiveaway]:
 
 
 async def send_crypto_status_message(message: Message) -> None:
+    app_info = await get_crypto_app()
     balances = await get_crypto_balances()
     checks = await active_crypto_checks()
     await message.answer(
-        crypto_balance_text(balances, len(checks)),
+        crypto_balance_text(app_info, balances, len(checks)),
         reply_markup=crypto_menu_keyboard(has_checks=bool(checks)),
     )
 
@@ -1382,6 +1436,21 @@ async def crypto_menu_handler(call: CallbackQuery) -> None:
             "Управление Crypto Pay.\nЗдесь можно смотреть удержание и удалять активные чеки.",
             reply_markup=crypto_menu_keyboard(has_checks=bool(checks)),
         )
+    await call.answer()
+
+
+@dp.callback_query(F.data == "crypto:delete_manual")
+async def crypto_delete_manual_prompt(call: CallbackQuery) -> None:
+    remember_user(call.from_user.id)
+    if not is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    admin_state[call.from_user.id] = {"kind": "crypto_delete_manual", "step": "check_id"}
+    await call.message.answer(
+        "Пришли check_id для удаления.\nМожно отправить просто число или текст вида #12345.",
+        reply_markup=crypto_menu_keyboard(has_checks=True),
+    )
     await call.answer()
 
 
@@ -1641,6 +1710,34 @@ async def admin_flow(message: Message) -> None:
         await message.answer(
             f"Рассылка завершена.\n\nУспешно: {sent}\nНе доставлено: {failed}",
             reply_markup=admin_keyboard(),
+        )
+        return
+
+    if kind == "crypto_delete_manual" and step == "check_id":
+        check_id = parse_check_id(text)
+        if not check_id:
+            await message.answer("Пришли корректный check_id. Например: 12345 или #12345.")
+            return
+
+        try:
+            completed = await delete_and_unbind_check(check_id)
+            checks = await active_crypto_checks()
+        except Exception as exc:
+            logging.exception("Could not delete Crypto Pay check manually")
+            await message.answer(
+                f"Не удалось удалить чек <code>{check_id}</code>: {escape(str(exc))}",
+                reply_markup=crypto_menu_keyboard(has_checks=True),
+            )
+            return
+
+        suffix = ""
+        if completed and completed.winners:
+            suffix = f"\nПривязка к победителю сброшена: {user_label(completed.winners[0])}."
+
+        admin_state.pop(message.from_user.id, None)
+        await message.answer(
+            f"Чек <code>{check_id}</code> удалён.{suffix}",
+            reply_markup=crypto_menu_keyboard(has_checks=bool(checks)),
         )
         return
 
