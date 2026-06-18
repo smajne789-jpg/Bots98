@@ -3,10 +3,12 @@ import logging
 import os
 import random
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from html import escape
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
+import aiohttp
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -16,7 +18,10 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID_RAW = os.getenv("ADMIN_ID")
+EXTRA_ADMIN_IDS_RAW = os.getenv("EXTRA_ADMIN_IDS", "")
 CHANNEL_ID_RAW = os.getenv("CHANNEL_ID")
+CRYPTO_PAY_TOKEN = os.getenv("CRYPTO_PAY_TOKEN")
+CRYPTO_PAY_API_URL = os.getenv("CRYPTO_PAY_API_URL", "https://pay.crypt.bot/api")
 USERS_FILE = Path(__file__).with_name("broadcast_users.json")
 ADMINS_FILE = Path(__file__).with_name("extra_admins.json")
 
@@ -26,6 +31,7 @@ BRAND_USERNAME, BRAND_AUTHOR = "@brazers_promo", "от Илюшки"
 MAX_MINI_PLAYERS = 6
 MINI_JOIN_COOLDOWN_SECONDS = 5
 KIND_TITLES = {
+    "mini_money2": "Mini Babki 2",
     "mini": "Мини-розыгрыш",
     "classic": "Розыгрыш",
     "duel": "Дуэль",
@@ -57,6 +63,7 @@ class Giveaway:
     message_id: Optional[int] = None
     participants: List[dict] = field(default_factory=list)
     finished: bool = False
+    meta: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -67,6 +74,7 @@ class CompletedGiveaway:
     winners: List[dict] = field(default_factory=list)
     winners_count: int = 1
     message_id: Optional[int] = None
+    meta: Dict[str, Any] = field(default_factory=dict)
 
 
 bot = Bot(TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -77,24 +85,94 @@ admin_state: Dict[int, dict] = {}
 mini_join_cooldowns: Dict[int, float] = {}
 
 
-def load_extra_admins() -> set[int]:
-    if not ADMINS_FILE.exists():
-        return set()
+def usd_decimal(value: str | Decimal) -> Decimal:
+    amount = Decimal(str(value).replace("$", "").replace(",", ".").strip())
+    if amount <= 0:
+        raise InvalidOperation
+    return amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
+
+def format_usd(value: str | Decimal) -> str:
+    return f"{usd_decimal(value):.2f}"
+
+
+def with_crypto_fee(value: str | Decimal) -> str:
+    total = (usd_decimal(value) * Decimal("1.05")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return f"{total:.2f}"
+
+
+async def notify_admins(text: str) -> None:
+    for admin_id in sorted(all_admin_ids()):
+        try:
+            await bot.send_message(admin_id, text, disable_web_page_preview=True)
+        except Exception:
+            logging.exception("Could not notify admin %s", admin_id)
+
+
+def crypto_invoice_url(result: dict) -> Optional[str]:
+    return result.get("pay_url") or result.get("bot_invoice_url") or result.get("mini_app_invoice_url") or result.get("invoice_url")
+
+
+def crypto_check_url(result: dict) -> Optional[str]:
+    return result.get("bot_check_url") or result.get("mini_app_check_url") or result.get("check_url") or result.get("send_url")
+
+
+async def crypto_pay_request(method: str, payload: dict) -> dict:
+    if not CRYPTO_PAY_TOKEN:
+        raise RuntimeError("Set CRYPTO_PAY_TOKEN for Mini Babki 2")
+
+    async with aiohttp.ClientSession(headers={"Crypto-Pay-API-Token": CRYPTO_PAY_TOKEN}) as session:
+        async with session.post(f"{CRYPTO_PAY_API_URL.rstrip('/')}/{method}", json=payload) as response:
+            data = await response.json(content_type=None)
+
+    if not data.get("ok"):
+        raise RuntimeError(data.get("error", f"Crypto Pay API error on {method}"))
+    return data["result"]
+
+
+async def create_crypto_invoice(amount_usd: str, title: str) -> dict:
+    result = await crypto_pay_request(
+        "createInvoice",
+        {
+            "asset": "USDT",
+            "amount": amount_usd,
+            "description": title,
+            "paid_btn_name": "viewItem",
+            "paid_btn_url": f"https://t.me/{BRAND_USERNAME.lstrip('@')}",
+        },
+    )
+    url = crypto_invoice_url(result)
+    if not url:
+        raise RuntimeError("Crypto Pay API did not return invoice URL")
+    return {"invoice_id": result.get("invoice_id") or result.get("id"), "url": url}
+
+
+async def create_crypto_check(amount_usd: str, winner: dict) -> dict:
+    payload = {"asset": "USDT", "amount": amount_usd, "pin_to_user_id": winner["id"]}
+    if winner.get("username"):
+        payload["pin_to_username"] = winner["username"]
+
+    result = await crypto_pay_request("createCheck", payload)
+    url = crypto_check_url(result)
+    if not url:
+        raise RuntimeError("Crypto Pay API did not return check URL")
+    return {"check_id": result.get("check_id") or result.get("id"), "url": url}
+
+
+def load_extra_admins() -> set[int]:
     try:
-        raw_items = ADMINS_FILE.read_text(encoding="utf-8").splitlines()
-        return {int(item.strip()) for item in raw_items if item.strip() and int(item.strip()) != ADMIN_ID}
+        return {
+            int(item.strip())
+            for item in EXTRA_ADMIN_IDS_RAW.replace(";", ",").split(",")
+            if item.strip() and int(item.strip()) != ADMIN_ID
+        }
     except Exception:
-        logging.exception("Could not load extra admins")
+        logging.exception("Could not parse EXTRA_ADMIN_IDS")
         return set()
 
 
 def save_extra_admins() -> None:
-    try:
-        payload = "\n".join(str(user_id) for user_id in sorted(extra_admin_ids))
-        ADMINS_FILE.write_text(payload, encoding="utf-8")
-    except Exception:
-        logging.exception("Could not save extra admins")
+    return None
 
 
 def load_known_users() -> set[int]:
@@ -149,6 +227,8 @@ def admin_list_text() -> str:
     else:
         lines.append("")
         lines.append("Дополнительных админов пока нет.")
+    lines.append("")
+    lines.append("EXTRA_ADMIN_IDS Р±РµСЂС‘С‚СЃСЏ РёР· РїРµСЂРµРјРµРЅРЅРѕР№ РѕРєСЂСѓР¶РµРЅРёСЏ.")
     return "\n".join(lines)
 
 
@@ -184,6 +264,22 @@ def mini_text(giveaway: Giveaway) -> str:
         f"🎉 <b>{branded_title('БЫСТРЫЙ МИНИ-РОЗЫГРЫШ')}</b>",
         "",
         f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
+        f"👥 <b>Участников:</b> {len(giveaway.participants)}/{giveaway.max_players}",
+        "",
+        *promo_lines(),
+        "",
+        "📋 <b>Список участников:</b>",
+        *participants_block(giveaway, "Пока пусто, можешь быть первым."),
+    ]
+    return "\n".join(lines)
+
+
+def mini_money2_text(giveaway: Giveaway) -> str:
+    lines = [
+        f"🤑 <b>{branded_title('MINI BABKI 2')}</b>",
+        "",
+        f"💵 <b>Приз:</b> ${escape(str(giveaway.meta.get('prize_amount_usd', giveaway.prize)))}",
+        f"💸 <b>Счёт CryptoBot:</b> ${escape(str(giveaway.meta.get('payment_amount_usd', '0.00')))} (+5%)",
         f"👥 <b>Участников:</b> {len(giveaway.participants)}/{giveaway.max_players}",
         "",
         *promo_lines(),
@@ -347,6 +443,7 @@ def football_result_text(giveaway: Giveaway, first: dict, second: dict, first_sc
 
 def public_keyboard(kind: str, active: bool = True) -> InlineKeyboardMarkup:
     labels = {
+        "mini_money2": "🤑 Участвовать",
         "mini": "🎉 Участвовать",
         "classic": "🎟 Войти в розыгрыш",
         "duel": "⚔️ Войти в дуэль",
@@ -355,6 +452,7 @@ def public_keyboard(kind: str, active: bool = True) -> InlineKeyboardMarkup:
         "football": "⚽ Войти в футбол",
     }
     closed_labels = {
+        "mini_money2": "🔒 Розыгрыш завершён",
         "mini": "🔒 Набор закрыт",
         "classic": "🔒 Розыгрыш завершён",
         "duel": "🔒 Дуэль завершена",
@@ -371,6 +469,12 @@ def public_keyboard(kind: str, active: bool = True) -> InlineKeyboardMarkup:
     )
 
 
+def mini_money2_claim_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🎁 Забрать приз", callback_data="claim:mini_money2")]]
+    )
+
+
 def start_keyboard(user_id: int) -> InlineKeyboardMarkup:
     rows = []
     if is_admin(user_id):
@@ -381,6 +485,7 @@ def start_keyboard(user_id: int) -> InlineKeyboardMarkup:
 
 def admin_keyboard() -> InlineKeyboardMarkup:
     rows = [
+        [InlineKeyboardButton(text="🤑 Создать Mini Babki 2", callback_data="create:mini_money2")],
         [InlineKeyboardButton(text="🎉 Создать мини", callback_data="create:mini")],
         [InlineKeyboardButton(text="🎊 Создать розыгрыш", callback_data="create:classic")],
         [InlineKeyboardButton(text="⚔️ Создать дуэль", callback_data="create:duel")],
@@ -417,7 +522,7 @@ def remove_admin_keyboard() -> InlineKeyboardMarkup:
 
 def manage_keyboard() -> InlineKeyboardMarkup:
     rows: List[List[InlineKeyboardButton]] = []
-    for kind in ("mini", "classic", "duel", "darts", "bowling", "football"):
+    for kind in ("mini_money2", "mini", "classic", "duel", "darts", "bowling", "football"):
         if kind in active_giveaways:
             rows.append([InlineKeyboardButton(text=f"👥 Участники: {KIND_TITLES[kind]}", callback_data=f"admin:members:{kind}")])
             rows.append([InlineKeyboardButton(text=f"🏁 Завершить: {KIND_TITLES[kind]}", callback_data=f"admin:finish:{kind}")])
@@ -429,6 +534,8 @@ def manage_keyboard() -> InlineKeyboardMarkup:
 
 
 def current_text(giveaway: Giveaway) -> str:
+    if giveaway.kind == "mini_money2":
+        return mini_money2_text(giveaway)
     if giveaway.kind == "mini":
         return mini_text(giveaway)
     if giveaway.kind == "classic":
@@ -543,6 +650,88 @@ async def finish_mini(giveaway: Giveaway) -> str:
     )
     active_giveaways.pop("mini", None)
     return f"Победитель мини: {user_label(winner)}"
+
+
+async def send_mini_money2_check_to_winner(completed: CompletedGiveaway) -> None:
+    winner = completed.winners[0]
+    check_url = completed.meta.get("claim_check_url")
+    if not check_url:
+        return
+
+    await bot.send_message(
+        winner["id"],
+        "\n".join(
+            [
+                "🎉 <b>Ты выиграл Mini Babki 2</b>",
+                "",
+                f"💵 <b>Сумма:</b> ${escape(str(completed.meta.get('prize_amount_usd', completed.prize)))}",
+                "Нажми кнопку ниже, чтобы открыть чек CryptoBot.",
+            ]
+        ),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="🎁 Открыть чек", url=check_url)]]
+        ),
+        disable_web_page_preview=True,
+    )
+
+
+async def ensure_mini_money2_check(completed: CompletedGiveaway) -> str:
+    if completed.meta.get("claim_check_url"):
+        return str(completed.meta["claim_check_url"])
+
+    check = await create_crypto_check(str(completed.meta["prize_amount_usd"]), completed.winners[0])
+    completed.meta["claim_check_url"] = check["url"]
+    completed.meta["claim_check_id"] = check["check_id"]
+    return check["url"]
+
+
+async def finish_mini_money2(giveaway: Giveaway) -> str:
+    giveaway.finished = True
+    winner, winner_score = await roll_contest(
+        giveaway.participants,
+        "🎲",
+        "🎲 Определяем победителя Mini Babki 2 реальными кубиками...",
+    )
+
+    completed = CompletedGiveaway(
+        kind="mini_money2",
+        prize=giveaway.prize,
+        participants=list(giveaway.participants),
+        winners=[winner],
+        winners_count=1,
+        message_id=giveaway.message_id,
+        meta=dict(giveaway.meta),
+    )
+
+    try:
+        await ensure_mini_money2_check(completed)
+        await send_mini_money2_check_to_winner(completed)
+    except Exception as exc:
+        logging.exception("Could not create/send Mini Babki 2 check")
+        await notify_admins(f"Mini Babki 2: не удалось выдать чек автоматически: {escape(str(exc))}")
+
+    await bot.edit_message_text(
+        chat_id=CHANNEL_ID,
+        message_id=giveaway.message_id,
+        text="\n".join(
+            [
+                "✅ <b>Mini Babki 2 завершён</b>",
+                "",
+                f"💵 <b>Приз:</b> ${escape(str(giveaway.meta.get('prize_amount_usd', giveaway.prize)))}",
+                f"🎲 <b>Победный бросок:</b> {winner_score}",
+                "",
+                f"🏆 <b>Победитель:</b> {user_label(winner)}",
+                "Нажми кнопку ниже, чтобы забрать приз.",
+                "",
+                f"🔖 {signature_line()}",
+            ]
+        ),
+        reply_markup=mini_money2_claim_keyboard(),
+        disable_web_page_preview=True,
+    )
+    completed_giveaways["mini_money2"] = completed
+    active_giveaways.pop("mini_money2", None)
+    return f"Победитель Mini Babki 2: {user_label(winner)}"
 
 
 async def finish_classic(giveaway: Giveaway) -> str:
@@ -752,6 +941,16 @@ async def reroll_giveaway(kind: str) -> str:
         elif kind == "mini":
             giveaway = Giveaway(kind="mini", prize=completed.prize, max_players=len(completed.participants), message_id=completed.message_id, participants=list(completed.participants))
             return await finish_mini(giveaway)
+        elif kind == "mini_money2":
+            giveaway = Giveaway(
+                kind="mini_money2",
+                prize=completed.prize,
+                max_players=len(completed.participants),
+                message_id=completed.message_id,
+                participants=list(completed.participants),
+                meta=dict(completed.meta),
+            )
+            return await finish_mini_money2(giveaway)
         else:
             title = "Рерол розыгрыша"
             text = result_text(title, completed.prize, new_winners)
@@ -778,6 +977,8 @@ async def finish_giveaway_by_kind(kind: str) -> str:
 
     if kind == "mini":
         return await finish_mini(giveaway)
+    if kind == "mini_money2":
+        return await finish_mini_money2(giveaway)
     if kind == "classic":
         return await finish_classic(giveaway)
     if kind == "darts":
@@ -799,7 +1000,7 @@ async def finish_giveaway_by_kind(kind: str) -> str:
 
 def status_text() -> str:
     lines = ["📊 <b>Текущий статус бота</b>", ""]
-    for kind in ("mini", "classic", "duel", "darts", "bowling", "football"):
+    for kind in ("mini_money2", "mini", "classic", "duel", "darts", "bowling", "football"):
         giveaway = active_giveaways.get(kind)
         if giveaway:
             lines.append(f"• <b>{KIND_TITLES[kind]}</b>: активен, участников {len(giveaway.participants)}")
@@ -824,7 +1025,7 @@ def active_giveaways_text() -> str:
     lines = ["🗂 <b>Активные розыгрыши</b>", ""]
 
     found = False
-    for kind in ("mini", "classic", "duel", "darts", "bowling", "football"):
+    for kind in ("mini_money2", "mini", "classic", "duel", "darts", "bowling", "football"):
         giveaway = active_giveaways.get(kind)
         if not giveaway:
             continue
@@ -1011,6 +1212,7 @@ async def create_handler(call: CallbackQuery) -> None:
     kind = call.data.split(":", 1)[1]
     admin_state[call.from_user.id] = {"kind": kind, "step": "prize"}
     prompts = {
+        "mini_money2": "Пришли сумму приза в долларах для Mini Babki 2. Например: 25",
         "mini": "Пришли приз для мини-розыгрыша.",
         "classic": "Пришли приз для обычного розыгрыша.",
         "duel": "Пришли приз для дуэли.",
@@ -1086,6 +1288,35 @@ async def admin_flow(message: Message) -> None:
             await message.answer("Приз не должен быть пустым.")
             return
 
+        if kind == "mini_money2":
+            try:
+                prize_amount = format_usd(text)
+                payment_amount = with_crypto_fee(prize_amount)
+            except InvalidOperation:
+                await message.answer("Пришли корректную сумму в USD. Например: 10 или 10.50")
+                return
+
+            try:
+                invoice = await create_crypto_invoice(payment_amount, f"Mini Babki 2 prize fund ${prize_amount}")
+            except Exception as exc:
+                logging.exception("Could not create Mini Babki 2 invoice")
+                await message.answer(f"Не удалось создать счёт CryptoBot: {escape(str(exc))}")
+                return
+
+            await create_and_publish(
+                message,
+                kind,
+                f"${prize_amount}",
+                1,
+                meta={
+                    "prize_amount_usd": prize_amount,
+                    "payment_amount_usd": payment_amount,
+                    "crypto_invoice_url": invoice["url"],
+                    "crypto_invoice_id": invoice["invoice_id"],
+                },
+            )
+            return
+
         state["prize"] = text
         if kind == "classic":
             state["step"] = "winners"
@@ -1103,7 +1334,7 @@ async def admin_flow(message: Message) -> None:
         await create_and_publish(message, kind, state["prize"], int(text))
 
 
-async def create_and_publish(message: Message, kind: str, prize: str, winners_count: int) -> None:
+async def create_and_publish(message: Message, kind: str, prize: str, winners_count: int, meta: Optional[Dict[str, Any]] = None) -> None:
     if kind in active_giveaways:
         await message.answer(f"Сначала заверши текущий пост типа: {KIND_TITLES[kind]}.")
         return
@@ -1112,11 +1343,26 @@ async def create_and_publish(message: Message, kind: str, prize: str, winners_co
         kind=kind,
         prize=prize,
         winners_count=winners_count,
-        max_players=MAX_MINI_PLAYERS if kind == "mini" else 2 if kind in {"duel", "darts", "bowling", "football"} else None,
+        max_players=MAX_MINI_PLAYERS if kind in {"mini", "mini_money2"} else 2 if kind in {"duel", "darts", "bowling", "football"} else None,
+        meta=meta or {},
     )
     await publish_giveaway(giveaway)
     admin_state.pop(message.from_user.id, None)
     await message.answer("Пост опубликован в канал.", reply_markup=admin_keyboard())
+    if kind == "mini_money2":
+        await message.answer(
+            "\n".join(
+                [
+                    "Mini Babki 2 опубликован в канале.",
+                    f"Сумма приза: ${escape(str(giveaway.meta['prize_amount_usd']))}",
+                    f"Счёт CryptoBot: ${escape(str(giveaway.meta['payment_amount_usd']))}",
+                    giveaway.meta["crypto_invoice_url"],
+                ]
+            ),
+            reply_markup=admin_keyboard(),
+            disable_web_page_preview=True,
+        )
+        return
 
 
 @dp.callback_query(F.data.startswith("join:"))
@@ -1133,7 +1379,7 @@ async def join_handler(call: CallbackQuery) -> None:
         await call.answer("Ты уже участвуешь")
         return
 
-    if kind == "mini":
+    if kind in {"mini", "mini_money2"}:
         now = asyncio.get_running_loop().time()
         last_join_time = mini_join_cooldowns.get(call.from_user.id, 0.0)
         remaining = MINI_JOIN_COOLDOWN_SECONDS - (now - last_join_time)
@@ -1152,30 +1398,30 @@ async def join_handler(call: CallbackQuery) -> None:
             "name": call.from_user.first_name,
         }
     )
-    if kind == "mini":
+    if kind in {"mini", "mini_money2"}:
         mini_join_cooldowns[call.from_user.id] = asyncio.get_running_loop().time()
 
     if kind == "duel" and len(giveaway.participants) == 2:
         result = await finish_duel(giveaway)
-        await bot.send_message(ADMIN_ID, result)
+        await notify_admins(result)
         await call.answer("Второй игрок зашёл, дуэль уже сыграна.")
         return
 
     if kind == "darts" and len(giveaway.participants) == 2:
         result = await finish_darts(giveaway)
-        await bot.send_message(ADMIN_ID, result)
+        await notify_admins(result)
         await call.answer("Второй игрок зашёл, дартс уже сыгран.")
         return
 
     if kind == "bowling" and len(giveaway.participants) == 2:
         result = await finish_bowling(giveaway)
-        await bot.send_message(ADMIN_ID, result)
+        await notify_admins(result)
         await call.answer("Второй игрок зашёл, боулинг уже сыгран.")
         return
 
     if kind == "football" and len(giveaway.participants) == 2:
         result = await finish_football(giveaway)
-        await bot.send_message(ADMIN_ID, result)
+        await notify_admins(result)
         await call.answer("Второй игрок зашёл, футбол уже сыгран.")
         return
 
@@ -1184,11 +1430,47 @@ async def join_handler(call: CallbackQuery) -> None:
     if kind == "mini" and len(giveaway.participants) == giveaway.max_players:
         await asyncio.sleep(0.7)
         result = await finish_mini(giveaway)
-        await bot.send_message(ADMIN_ID, result)
+        await notify_admins(result)
         await call.answer("Ты успел в мини, победитель уже определён.")
         return
 
     await call.answer(f"Готово. Сейчас участников: {len(giveaway.participants)}")
+    if kind == "mini_money2" and len(giveaway.participants) == giveaway.max_players:
+        await asyncio.sleep(0.7)
+        result = await finish_mini_money2(giveaway)
+        await notify_admins(result)
+        await call.answer("Ты успел в Mini Babki 2, победитель уже определён.")
+        return
+    await call.answer(f"Готово. Сейчас участников: {len(giveaway.participants)}")
+
+
+@dp.callback_query(F.data == "claim:mini_money2")
+async def claim_mini_money2(call: CallbackQuery) -> None:
+    completed = completed_giveaways.get("mini_money2")
+    if not completed or not completed.winners:
+        await call.answer("Сейчас нечего забирать", show_alert=True)
+        return
+
+    winner = completed.winners[0]
+    if call.from_user.id != winner["id"]:
+        await call.answer("Забрать приз может только победитель", show_alert=True)
+        return
+
+    try:
+        check_url = await ensure_mini_money2_check(completed)
+        await bot.send_message(
+            call.from_user.id,
+            f"🎁 Твой чек на ${escape(str(completed.meta.get('prize_amount_usd', completed.prize)))}",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="🎁 Открыть чек", url=check_url)]]
+            ),
+            disable_web_page_preview=True,
+        )
+        await call.answer("Чек отправлен тебе в личку", show_alert=True)
+    except Exception as exc:
+        logging.exception("Could not resend Mini Babki 2 check")
+        await notify_admins(f"Mini Babki 2: ошибка повторной выдачи чека: {escape(str(exc))}")
+        await call.answer("Не удалось выдать чек, админы уже получили уведомление", show_alert=True)
 
 
 async def on_startup() -> None:
